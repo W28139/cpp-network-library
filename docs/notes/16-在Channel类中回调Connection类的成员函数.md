@@ -4,7 +4,7 @@
 
 先看谁会接收到断开的信息，是`Channel::handleevent()`函数:
 
-![](pc/55.png)
+![](../pc/55.png)
 
 
 
@@ -45,17 +45,17 @@ void Connection::errorcallback()
 
 2. 在`Channel` 类中声明两个回调函数类型的成员变量，并实现相应的成员函数，用于设置（注册）这些回调函数。
 
-![](pc/56.png)
+![](../pc/56.png)
 
 成员函数的函数体很简单，就是把接收到的回调函数`fn`赋值给对应的成员变量(回调函数)
 
 然后在`Connection`的构造函数中设置好回调函数
 
-![](pc/57.png)
+![](../pc/57.png)
 
 最后在`Channel`类对应的位置调用回调函数：
 
-![](pc/58.png)
+![](../pc/58.png)
 
 
 
@@ -96,16 +96,16 @@ void TcpServer::errorconnection(Connection *conn)
 
 2. 在 `Connection` 类中定义两个回调函数成员变量，并提供相应的接口函数用于注册回调。
 
-![](pc/59.png)
+![](../pc/59.png)
 
 成员函数具体实现就是将`TcpServer`类回传的 `fn`设置为 成员变量，等待调用
 
 3. 然后在 `TcpServer::newconnection` 函数中，在创建 `Connection` 对象时，将回调函数绑定到 `Connection` 类中的对应回调成员变量。
 
-![](pc/61.png)
+![](../pc/61.png)
 
 注意要留一个占位符，预留传参
 
 4. 最后在想要实现`TcpServer::`函数的位置设置回调函数---成员变量+()即可，注意传入参数为`Connection* `,即为`this`指针
 
-![](pc/60.png)
+![](../pc/60.png)

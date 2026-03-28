@@ -30,24 +30,24 @@
    * 保证变量不会被任意修改，只会被拿来使用
 3. 为什么会回头在`InetAddress.h`里加一个函数，功能是接受外界传进的addr，把他设置为成员变量
 
-![](pc/11.png)
+![](../pc/11.png)
 
 这一个是Socket里的accept成员函数初始状态(刚从tcpepoll.cpp里复制过来，未修改)，除了将listenfd参数改为成员变量fd_之外，还有：
 我们传进来的是`InetAddress*`类，目的是把`accept`接受到的客户端信息传入这个类，也就是需要修改这个类，但看源码，我们是在`Socket::accept()`里新建了一个`Inetaddress`类，而不是修改的传进来的，因此此处需要修改，直接将`peeraddr`放入传进来的类里，但是，在`InetAddress`成员函数里，没有这个功能的函数，因此添加，因此需要动`InetAddress.h`的内容，修改结果如下：
-![](pc/12.png)
+![](../pc/12.png)
 
-![](pc/13.png)
+![](../pc/13.png)
 
 这里同时修正了返回值，应该为int
 
 4. 在修改最终回头修改`tcpepoll.cpp`的时候，除了修改监听fd相关代码外，还需要修改客户端连上的fd代码块
 
-   ![](pc/14.png)
+   ![](../pc/14.png)
 
 这里有调整，因为需要传入空的`clientaddr`，但是`InetAddress`又没有空构造，因此需要再次调整`InetAddress.h`的内容
 
 修改后为：
-![](pc/15.png)
+![](../pc/15.png)
 
 
 

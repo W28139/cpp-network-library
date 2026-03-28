@@ -17,9 +17,9 @@
 
 现在存在的问题是，new出的Channel、Socket 无法销毁
 
-![](pc/9.png)
+![](../pc/9.png)
 
-![](pc/10.png)
+![](../pc/10.png)
 
 
 
@@ -52,16 +52,16 @@ TcpServer 是**公司**，Acceptor 是**HR（负责招人/接客）**，Connecti
 
 我们先封装`Accept`类，第一步就是将之前`TcpServer`构造函数里的那些代码移到`Accept`里
 
-![](pc/31.png)
+![](../pc/31.png)
 
 先创建基础的`Acceptor`类，其中成员变量和构造函数由上面截图代码来添加，如下：
 
-![](pc/32.png)
+![](../pc/32.png)
 
 确保完全替代掉`TcpServer`构造函数里的内容，把他们完全提取出来，单独成类
 
 其中具体内容为：
-![](pc/33.png)
+![](../pc/33.png)
 
 注意，销毁的对象是自己new的，而不能是外界传进来的
 
@@ -69,9 +69,9 @@ TcpServer 是**公司**，Acceptor 是**HR（负责招人/接客）**，Connecti
 
 自然是把类加到它的成员变量里，然后再修改构造函数即可
 
-![](pc/34.png)
+![](../pc/34.png)
 
-![](pc/35.png)
+![](../pc/35.png)
 
 
 
@@ -79,7 +79,7 @@ TcpServer 是**公司**，Acceptor 是**HR（负责招人/接客）**，Connecti
 
 封装服务端用于通信的`Channel`，找到`connectchannel`创建的位置(`channel.newconnection`内)，然后把他整理到connection类的构造函数内，根据需要判断传参
 
-![](pc/36.png)
+![](../pc/36.png)
 
 需要传参：`EventLoop *loop`和`Socket *clientsock`
 
@@ -90,11 +90,11 @@ TcpServer 是**公司**，Acceptor 是**HR（负责招人/接客）**，Connecti
 * 外界传进来时是new的，但是外界没有delete
 * 使用完`Connection`类之后，这个对象就没用了，在`newconnection()`的代码块里不再被使用
 
-![](pc/37.png)
+![](../pc/37.png)
 
 因此，虽然是外界传进来的，但是依然是要销毁的，最后修改`newconnection()`里的内容
 
-![](pc/38.png)
+![](../pc/38.png)
 
 很容易发现，这个新`new`的对象依旧没有`delete`，会有内存泄漏，此问题之后再说
 

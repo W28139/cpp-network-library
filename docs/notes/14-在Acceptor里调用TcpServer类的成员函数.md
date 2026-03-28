@@ -2,18 +2,18 @@
 
 到目前为止，`Connection`代码写的是在`Acceptor`类的成员函数里
 
-![](pc/45.png)
+![](../pc/45.png)
 
 在这里new的，而且没有销毁，因此要修改
 
 修改为在`TcpServer`类里创建`Connection`，以成员函数的身份出现，但只需要转移一行即可，因为：
-![](pc/46.png)
+![](../pc/46.png)
 
 另外如果都转移过去，还要再传一个`Serversock_`（因为`TcpServer`没有这个成员函数），实在没必要
 
 修改后的`TcpServer::newconnection()`如下，注意要传一个参数,因为没这个成员变量，注意`new Connection()`里，第一个参数传的应该指针，因此要取地址，因为`EventLoop Loop_`在`TcpServer`类里是栈对象,如下：
 
-![](pc/47.png)
+![](../pc/47.png)
 
 
 
@@ -22,15 +22,15 @@
 * 在`Acceptor`类里增加成员变量`std::function<void(Socket* )>newconnectioncb_;`
 * 在`Acceptor`类里增加成员函数，用于设置成员函数---回调函数(刚设置的)
 
-![](pc/48.png)
+![](../pc/48.png)
 
 在`Acceptor.cpp`里做如下修改：
 
-![](pc/49.png)
+![](../pc/49.png)
 
 最后修改TcpServer类部分，在构造函数中，添加绑定：
 
-![](pc/50.png)
+![](../pc/50.png)
 
 注意，这里的`bind()`里，有一个占位参数`std::placeholders::_1`，等待调用的时候传入进来
 
@@ -42,7 +42,7 @@
 
 # 整个回调过程：
 
-![](pc/51.png)
+![](../pc/51.png)
 
 
 

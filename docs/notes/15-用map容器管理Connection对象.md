@@ -4,7 +4,7 @@
 
 除了 `TcpServer`类，其他都属于底层架构， 而最接近业务的是 `TcpServer`，因此，需要调整一个日志，它应该属于业务，而非底层
 
-![](pc/52.png)
+![](../pc/52.png)
 
 因此将这一句话放置到`TcpServer`类内，在接收新连接，创建完成`Connection`对象后打印
 
@@ -14,7 +14,7 @@
 
 最终实现效果：
 
-![](pc/53.png)
+![](../pc/53.png)
 
 
 
@@ -23,7 +23,7 @@
 在`TcpServer`类里，一个`TcpServer`类对应多个`Connection`类，因此，为了方便管理，以及解决前面遗留问题--新建立连接的`connection`没有销毁，我们在`TcpServer`类里添加成员变量`std::map<int,Connection*>conns_;`，第一个int代表fd，第二个代表连，此时就可以在析构函数里遍历，然后delete即可
 
 添加和delete代码如下：
-![](pc/54.png)
+![](../pc/54.png)
 
 但此时依旧非最优`delete`，因为这是在程序关闭后统一delete,而不是在断开连接后即使单个关闭
 

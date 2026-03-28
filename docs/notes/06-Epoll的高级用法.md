@@ -67,19 +67,19 @@ public:
 
 这里面有个特殊一些的成员函数就是`enablereading()`
 
-![](pc/16.png)
+![](../pc/16.png)
 
-![](pc/17.png)
+![](../pc/17.png)
 
 它所被使用的场地为`tcpepoll.cpp`里：
 
-![](pc/20.png)
+![](../pc/20.png)
 
 其实就是把服务器`listenfd`挂到红黑树上，这就是它的作用，它是最特殊的，其他需要挂树上都是会收到事件信号，他需要自己亲自先挂上
 
 当然，除了把自己挂树上，当有新client连接的时候，也需要构建一个新的`channel`，然后挂树上(这个相当于是收到事件信号后的操作)，这里与前面的区别是，新连接要加边缘触发，即要使用`Channel::useet()`成员函数
 
-![](pc/22.png)
+![](../pc/22.png)
 
 3. 把`Epoll`类里的成员函数
 
@@ -89,20 +89,20 @@ public:
 
 原因同上
 
-![](pc/18.png)
+![](../pc/18.png)
 
-![](pc/19.png)
+![](../pc/19.png)
 
 4. 开始修改对应的`tcpepoll.cpp`即可，比如上面`2`与`3`对应的地方，整体的`epoll_event`改为`channel`的形式，其中有一处判断，有两个方式，体现的依旧是`channel`与`fd`的一对一关系
 
-![](pc/21.png)
+![](../pc/21.png)
 
 
 
 5. 进一步封装`Channel`类
 
 由于服务端`tcpepoll.cpp`中，`ep.loop()`返回的时候，处理代码非常繁琐，且只于`channels`相关，因此将他们封装起来，即下面部分：
-![](pc/24.png)
+![](../pc/24.png)
 
 因此，添加成员函数`Channel::handleevent()`,把那些所有代码(一直到return 0；前面)
 
@@ -116,7 +116,7 @@ public:
 
 6. 对于刚封装的`handleevent()`内，有两个事件的处理流程不同，如下：
 
-![](pc/25.png)
+![](../pc/25.png)
 
 而当前`channel`类还未区分是哪个`fd`的成员变量，因此增加成员变量
 
@@ -126,7 +126,7 @@ public:
 
 增加判断方式即：
 
-![](pc/26.png)
+![](../pc/26.png)
 
 
 
@@ -710,7 +710,7 @@ int main(int argc,char *argv[]){
 
 `class Channel`而不是`#include"Channel.h"`
 
-![](pc/23.png)
+![](../pc/23.png)
 
 
 

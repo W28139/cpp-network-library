@@ -2,7 +2,7 @@
 
 调整如下代码，使其不被写死，实现定制功能，源码为传统编程思路，判断+执行完全固定，因此改为回调代码
 
-![](pc/4.png)
+![](../pc/4.png)
 
 调整方式：
 单独写两个函数，对应源码的`if/else`的执行内容
@@ -34,13 +34,13 @@ void Channel::setreadcallback(std::function<void()> fn)
 
 下一步，修改事件处理函数，设置替换为回调函数
 
-![](pc/5.png)
+![](../pc/5.png)
 
 然后修改`tcpepoll.cpp`内，在创建Channel类对象的时候，要指定类的回调函数，对于服务端来说，创建的`channel`属于新连接(目前有新连接选项和处理消息选项)，因此绑定成员函数`Channel::newconnection()`，灵活就体现在此，可以自己随意设置固定，在`Channel`框架内，统一空调用就能实现自己外部设置的不同功能
 
 注意传入参数，与`newconnection`需要参数相关，具体如下：
 
-![](pc/6.png)
+![](../pc/6.png)
 
 
 
@@ -62,7 +62,7 @@ void Channel::setreadcallback(std::function<void()> fn)
 
 同时，客户端有新连接时，也需要同样操作（只是bind传参不同）,客户端的回调函数是`onmessage()`
 
-![](pc/7.png)
+![](../pc/7.png)
 
 这里面传对象指针的时候，为什么穿的不是`this`?因为这本身就是在`channel`类里写的成员函数
 
