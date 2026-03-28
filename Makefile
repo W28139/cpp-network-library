@@ -17,7 +17,7 @@ SRCS = example/echoserver.cpp \
        muduo/Acceptor.cpp \
        muduo/Connection.cpp \
        muduo/Buffer.cpp \
-       muduo/EchoServer.cpp \
+       example/EchoServer.cpp \
        muduo/ThreadPool.cpp \
        muduo/Timestamp.cpp
 
