@@ -1,0 +1,1791 @@
+FILE: Acceptor.h
+#pragma once
+#include<functional>
+#include"Socket.h"
+#include"InetAddress.h"
+#include"Channel.h"
+#include"EventLoop.h"
+#include<memory>
+class Acceptor
+{
+private:
+	EventLoop* loop_;	
+	Socket serversock_;
+	Channel acceptchannel_;
+	
+	// 处理新客户端连接请求的回调函数，将指向TcpServer::newconnection()
+	std::function<void(std::unique_ptr<Socket>)>newconnectioncb_;
+	
+public:
+	Acceptor(EventLoop* loop,const std::string &ip,const uint16_t port);
+	~Acceptor();
+
+	void newconnection();
+	// 设置处理新客户端连接请求的回调函数
+	void setnewconnectioncb(std::function<void(std::unique_ptr<Socket>)> fn);
+};
+
+
+
+
+
+FILE: Buffer.h
+#pragma once
+#include<string>
+#include<iostream>
+
+class Buffer
+{
+private:
+	std::string buf_;
+public:
+	Buffer();
+	~Buffer();
+	
+	void append(const char* data,size_t size);
+	void appendwithhead(const char* data,size_t size);
+	size_t size();
+	void erase(size_t pos,size_t nn); 	// 从buf_的pos开始，删除nn个字节，pos从0开始
+	const char* data();
+	void clear();
+};
+
+
+
+FILE: Channel.h
+#pragma once
+#include<sys/epoll.h>
+#include"Epoll.h"
+#include"Socket.h"
+#include"InetAddress.h"
+#include"EventLoop.h"
+#include<functional>
+#include<memory>
+class EventLoop;
+
+class Channel
+{
+private:
+	int fd_ = -1;
+	EventLoop* loop_;
+	bool inepoll_ = false;
+	uint32_t events_ = 0;
+	uint32_t revents_ = 0;
+
+	std::function<void()>readcallback_;
+	std::function<void()>closecallback_;	// 关闭fd_的回调函数，将回调Connection::closecallback()
+	std::function<void()>errorcallback_;	// fd_发生了错误的回调函数，回调Connection::errorcallback()
+	std::function<void()>writecallback_;
+
+public:
+	Channel(EventLoop* loop,int fd);
+	~Channel();
+
+	int fd();
+	void useet();
+	
+	void enablereading();
+	void disablereading();
+	void enablewriting();
+	void disablewriting();
+	
+	void disableall();	// 取消写事件
+	void remove();		// 取消全部事件
+
+	void setinepoll();
+	void setrevents(uint32_t ev);
+	bool inepoll();
+	uint32_t events();
+	uint32_t revents();
+	void handleevent();
+
+	void setreadcallback(std::function<void()>fn);
+	void setclosecallback(std::function<void()>fn);
+	void seterrorcallback(std::function<void()>fn);
+	void setwritecallback(std::function<void()>fn);
+};
+
+
+
+
+FILE: Connection.h
+#pragma once
+#include<functional>
+#include<sys/syscall.h>
+#include"Socket.h"
+#include"InetAddress.h"
+#include"Channel.h"
+#include"EventLoop.h"
+#include<atomic>
+#include"Buffer.h"
+#include"Timestamp.h"
+#include<memory>
+
+class Connection;
+class EventLoop;
+class Channel;
+using spConnection = std::shared_ptr<Connection>;
+
+class Connection:public std::enable_shared_from_this<Connection>
+{
+private:
+	EventLoop* loop_;
+	std::unique_ptr<Socket> clientsock_;
+	std::unique_ptr<Channel> clientchannel_;
+
+	Buffer inputbuffer_;
+	Buffer outputbuffer_;
+	
+	std::atomic_bool disconnect_;	// 客户端连接是否已断开，如果已断开，则设置为true
+
+	std::function<void(spConnection)>closecallback_;
+	std::function<void(spConnection)>errorcallback_;
+	std::function<void(spConnection,std::string&)>onmessagecallback_;
+	std::function<void(spConnection)>sendcompletecallback_;
+	
+	Timestamp lastatime_;		// 时间戳，创建Connection对象时为当前时间，每收到一个报文，把时间戳更新为当前时间	
+
+public:
+	Connection(EventLoop* loop,std::unique_ptr<Socket> clientsock);
+	~Connection();
+
+	int fd() const;
+	std::string ip() const;
+	uint16_t port() const;
+
+	void closecallback();
+	void errorcallback();
+	void writecallback();
+
+	void setclosecallback(std::function<void(spConnection)>fn);
+	void seterrorcallback(std::function<void(spConnection)>fn);
+	void setonmessagecallback(std::function<void(spConnection,std::string&)>fn);
+	void setsendcompletecallback(std::function<void(spConnection)>fn);
+
+	void onmessage();
+
+	void send(const std::string data);
+	void sendinloop(const std::string& data);
+
+	bool timeout(time_t now,int val);	// 判断TCP连接是否超时
+};
+
+
+
+
+FILE: EchoServer.h
+#pragma once
+#include"TcpServer.h"
+#include"EventLoop.h"
+#include"Connection.h"
+
+class EchoServer
+{
+private:
+	TcpServer tcpserver_;
+	ThreadPool threadpool_;		// 工作线程池
+
+public:
+	EchoServer(const std::string &ip,const uint16_t port,int subthreadnum = 3,int workthreadnum=5);
+	~EchoServer();
+
+	void Start();
+
+	void HandleNewConnection(spConnection conn);
+	void HandleClose(spConnection conn);
+	void HandleError(spConnection conn);
+	void HandleSendComplete(spConnection conn);
+	void HandleTimeOut(EventLoop *loop);
+	void HandleMessage(spConnection conn,std::string& message);
+	void OnMessage(spConnection conn,std::string& message);	// 处理客户端的请求报文，用于添加给线程	
+	void Stop();
+	
+};
+
+
+
+FILE: Epoll.h
+#pragma once
+#include<stdio.h>
+#include<stdlib.h>
+#include<errno.h>
+#include<string.h>
+#include<sys/epoll.h>
+#include<vector>
+#include<unistd.h>
+
+#include"Channel.h"
+
+class Channel;
+
+class Epoll
+{
+private:
+	static const int MaxEvents = 100;
+	int epollfd_ = -1;
+	epoll_event events_[MaxEvents];
+public:
+	Epoll();
+	~Epoll();
+
+	// void addfd(int fd,uint32_t op);
+	
+	void updatechannel(Channel *ch);
+	void removechannel(Channel *ch);
+	std::vector<Channel*>loop(int timeout=-1);
+};
+
+
+
+FILE: EventLoop.h
+#pragma once
+#include"Epoll.h"
+#include<functional>
+#include<memory>
+#include<unistd.h>
+#include<queue>
+#include<mutex>
+#include <sys/eventfd.h>
+#include<sys/syscall.h>
+#include<sys/timerfd.h>	// 定时器需要包含这个头文件
+#include"Connection.h"
+#include<atomic>
+#include<map>
+class Channel;
+class Epoll;
+class Connection;
+using spConnection = std::shared_ptr<Connection>;
+
+class EventLoop
+{
+private:
+	std::unique_ptr<Epoll> ep_;
+	std::function<void(EventLoop*)>epolltimeoutcallback_;
+	pid_t threadid_;				// 事件循环所在线程的id
+	std::queue<std::function<void()>>taskqueue_;	// 事件循环线程被eventfd唤醒后执行的任务队列
+	int timetvl_;		// 闹钟时间间隔，单位：秒
+	int timeout_;		// Connection对象超时的事件
+	std::mutex mutex_;				// 任务队列同步的互斥锁
+	int wakeupfd_;					// 用于唤醒事件循环线程的fd
+	std::unique_ptr<Channel> wakechannel_;		// 用于唤醒事件循环线程的eventfd
+	int timerfd_;				// 定时器的fd
+	std::unique_ptr<Channel> timerchannel_;	// 定时器的Channel
+	std::mutex mmutex_;			// 保护conns_的互斥锁			
+	bool mainloop_;	// 主ture 从false
+	
+	std::map<int,spConnection>conns_;	// 存放运行在该事件循环上的全部Connection
+	std::function<void(int)> timercallback_;
+
+	std::atomic_bool stop_;
+
+public:
+	EventLoop(bool mainloop,int timetvl = 30,int timeout = 100);
+	~EventLoop();
+
+	void run();
+	void stop();
+
+	void updatechannel(Channel* ch);
+	void removechannel(Channel *ch);
+	void setepolltimeoutcallback(std::function<void(EventLoop*)>fn);
+	
+	bool isinloopthread();
+
+	void queueinloop(std::function<void()>fn);	// 把任务添加到任务队列中
+	void wakeup();					// 用eventfd唤醒事件循环线程
+	void handlewakeup();
+	void handletimer();				// 闹钟响时执行的函数
+	
+	void newconnection(spConnection conn);		// 把Connection对象存放在conns_中
+	void settimercallback(std::function<void(int)>fn);
+};
+
+
+
+FILE: InetAddress.h
+#pragma once
+#include<arpa/inet.h>
+#include<netinet/in.h>
+#include<string>
+
+class InetAddress
+{
+private:
+	sockaddr_in addr_;
+public:
+	InetAddress();
+	InetAddress(const std::string &ip,const uint16_t port);
+	InetAddress(const sockaddr_in addr);
+	~InetAddress();
+
+	const char* ip() const;
+	uint16_t port() const;
+	
+	const struct sockaddr *addr() const;
+
+	void setaddr(sockaddr_in addr);
+};
+
+
+
+FILE: Socket.h
+#pragma once
+#include<sys/types.h>
+#include<sys/socket.h>
+#include<netinet/tcp.h>
+#include<string>
+#include<errno.h>
+#include<unistd.h>
+#include"InetAddress.h"
+
+int createnonblocking();
+
+class Socket
+{
+private:
+	const int fd_;
+	std::string ip_;
+	uint16_t port_;
+
+public:
+	Socket(int fd);
+	~Socket();
+
+	int fd() const;
+	std::string ip() const;
+	uint16_t port() const;
+	void setipport(const std::string& ip,uint16_t port);
+
+	void setreuseaddr(bool on);
+	void setreuseport(bool on);
+	void settcpnodelay(bool on);
+	void setkeepalive(bool on);
+	void bind(const InetAddress& serveraddr);
+	void listen(int nn=128);
+	int accept(InetAddress& clientaddr);
+
+};
+
+
+
+FILE: TcpServer.h
+#pragma once
+#include"EventLoop.h"
+#include"Socket.h"
+#include"Channel.h"
+#include"ThreadPool.h"
+#include"Acceptor.h"
+#include"Connection.h"
+#include<map>
+#include<memory>
+#include<mutex>
+
+class TcpServer
+{
+private:
+	std::unique_ptr<EventLoop> mainloop_;			// 主事件循环
+	std::vector<std::unique_ptr<EventLoop>>subloops_;	// 从事件循环
+	ThreadPool threadpool_;			// 线程池
+	int threadnum_;				// 线程池的大小(从时间循环的个数)	
+	std::mutex mmutex_;
+	
+	Acceptor acceptor_;
+	std::map<int,spConnection>conns_;
+
+	std::function<void(spConnection)>newconnectioncb_;
+	std::function<void(spConnection)>closeconnectioncb_;
+	std::function<void(spConnection)>errorconnectioncb_;
+	std::function<void(spConnection,std::string &message)>onmessagecb_;
+	std::function<void(spConnection)>sendcompletecb_;
+	std::function<void(EventLoop*)>timeoutcb_;
+public:
+	TcpServer(const std::string &ip,const uint16_t port,int threadnum=3);
+	~TcpServer();
+
+	void start();
+	void stop();	// 停止IO线程和事件循环
+
+	void newconnection(std::unique_ptr<Socket> clientsock);
+	void closeconnection(spConnection conn);
+	void errorconnection(spConnection conn);
+	void onmessage(spConnection conn,std::string &message);
+	void sendcomplete(spConnection conn);
+	void epolltimeout(EventLoop *loop);
+	
+	void setnewconnectioncb(std::function<void(spConnection)>fn);
+	void setcloseconnectioncb(std::function<void(spConnection)>fn);
+	void seterrorconnectioncb(std::function<void(spConnection)>fn);
+	void setonmessagecb(std::function<void(spConnection,std::string &message)>fn);
+	void setsendcompletecb(std::function<void(spConnection)>fn);
+	void settimeoutcb(std::function<void(EventLoop*)>fn);
+	
+	void removeconn(int fd);
+};
+
+
+
+
+
+FILE: ThreadPool.h
+
+#pragma once
+#include<vector>
+#include<queue>
+#include<unistd.h>
+#include<sys/syscall.h>
+#include<mutex>
+#include<unistd.h>
+#include<thread>
+#include<condition_variable>
+#include<functional>
+#include<future>
+#include<atomic>
+
+class ThreadPool
+{
+private:
+	std::vector<std::thread> threads_;		// 线程池中的线程
+	std::queue<std::function<void()>>taskqueue_;	// 任务队列
+	std::mutex mutex_;				// 任务队列同步的互斥锁
+	std::condition_variable condition_;		// 任务队列同步的条件变量
+	std::atomic_bool stop_;				// 在析构函数中，把stop_变为true,全部线程退出
+	std::string threadtype_;			// IO 或者 WORKS
+public:
+	
+	// 在析构函数中，将启动threadnum线程
+	ThreadPool(size_t threadnum,const std::string &threadtype);	
+	
+	// 把任务添加到队列中	
+	void addtask(std::function<void()>task);
+
+	// 在析构函数中停止线程
+	~ThreadPool();
+
+	size_t size();
+	// 停止线程
+	void stop();
+};
+
+
+
+FILE: Timestamp.h
+#pragma once
+#include<iostream>
+#include<string>
+
+class Timestamp
+{
+private:
+	time_t secsinceepoch_;			// 整数表示时间
+
+public:
+	Timestamp();				// 用当前时间初始化对象
+	Timestamp(int64_t secsinceepoch);	// 用一个整数时间初始化对象
+
+	static Timestamp now();			// 返回当前时间的Timestamp对象
+	time_t toint() const;			// 返回整数表示时间
+	std::string tostring() const;		// 返回字符串表示的时间 格式：yyyy-mm-dd hh24:mi:ss
+};
+
+
+
+FILE: Acceptor.cpp
+#include"Acceptor.h"
+#include"Connection.h"
+Acceptor::Acceptor(EventLoop* loop,const std::string &ip,const uint16_t port)
+	:loop_(loop),serversock_(createnonblocking()),acceptchannel_(loop_,serversock_.fd())
+{
+	InetAddress serveraddr(ip,port);
+	serversock_.setreuseaddr(true);
+	serversock_.settcpnodelay(true);
+	serversock_.setreuseport(true);
+	serversock_.setkeepalive(true);
+	serversock_.bind(serveraddr);
+	serversock_.listen();
+
+	acceptchannel_.setreadcallback(std::bind(&Acceptor::newconnection,this));
+	acceptchannel_.enablereading();
+}
+
+Acceptor::~Acceptor()
+{
+}
+
+void Acceptor::newconnection()
+{
+	InetAddress clientaddr;
+
+	// Socket* clientsock = new Socket(serversock_.accept(clientaddr));
+	std::unique_ptr<Socket>clientsock(new Socket(serversock_.accept(clientaddr)));
+
+	clientsock->setipport(clientaddr.ip(),clientaddr.port());
+
+	newconnectioncb_(std::move(clientsock));
+}
+
+void Acceptor::setnewconnectioncb(std::function<void(std::unique_ptr<Socket>)> fn)
+{
+	newconnectioncb_ = fn;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+FILE: Buffer.cpp
+#include"Buffer.h"
+
+// private:
+//        std::string buf_;
+
+Buffer::Buffer(){}
+
+Buffer::~Buffer(){}
+
+void Buffer::append(const char* data,size_t size)
+{
+	buf_.append(data,size);
+}
+
+size_t Buffer::size()
+{
+	return buf_.size();
+}
+
+const char* Buffer::data()
+{
+	return buf_.data();
+}
+
+void Buffer::clear()
+{
+	buf_.clear();
+}
+
+void Buffer::erase(size_t pos,size_t nn)
+{
+	buf_.erase(pos,nn);
+}
+
+void Buffer::appendwithhead(const char *data,size_t size)
+{
+	buf_.append((char*)&size,4);
+	buf_.append(data,size);
+}
+
+
+
+FILE: Channel.cpp
+#include"Channel.h"
+
+Channel::Channel(EventLoop* loop,int fd):fd_(fd),loop_(loop){}
+
+Channel::~Channel(){}
+
+int Channel::fd()
+{
+	return fd_;
+}
+
+void Channel::useet()
+{
+	events_ = events_|EPOLLET;
+}
+
+void Channel::enablereading()
+{
+	events_ |= EPOLLIN;	// 注册读事件
+	loop_->updatechannel(this);
+}
+
+void Channel::disablereading()
+{
+	events_ &= ~EPOLLIN;	// 取消读时间
+	loop_->updatechannel(this);
+
+}
+
+
+void Channel::disableall()
+{
+	events_ = 0;
+	loop_->updatechannel(this);
+}
+
+void Channel::remove()
+{
+	disableall();
+	loop_->removechannel(this);
+
+}	
+void Channel::enablewriting()
+{
+	events_ |= EPOLLOUT;	// 注册写事件
+	loop_->updatechannel(this);
+}
+
+void Channel::disablewriting()
+{
+	events_ &= ~EPOLLOUT;	// 取消写事件
+	loop_->updatechannel(this);
+}
+
+void Channel::setinepoll()
+{
+	inepoll_ =true;
+}
+
+void Channel::setrevents(uint32_t ev)
+{
+	revents_ = ev;
+}
+
+bool Channel::inepoll()
+{
+	return inepoll_;
+}
+
+uint32_t Channel::events()
+{
+	return events_;
+}
+
+uint32_t Channel::revents()
+{
+	return revents_;
+}
+
+void Channel::handleevent()
+{
+	if(revents_ & EPOLLRDHUP)
+	{
+		// printf("EPOLLRDHUP\n");
+		closecallback_();
+	}
+	else if(revents_ & (EPOLLIN|EPOLLPRI))
+	{
+		// printf("EPOLLIN|EPOLLPRI\n");
+		readcallback_();
+
+	}
+	else if(revents_ & EPOLLOUT)
+	{
+		// printf("EPOLLOUT\n");
+		writecallback_();
+
+	}
+	else
+	{
+		// printf("ERROR\n");
+		errorcallback_();
+	}	
+}
+
+
+
+void Channel::setreadcallback(std::function<void()>fn)
+{
+	readcallback_ = fn;
+}
+
+
+void Channel::setclosecallback(std::function<void()>fn)
+{
+	closecallback_ = fn;
+}
+
+
+void Channel::seterrorcallback(std::function<void()>fn)
+{
+	errorcallback_ = fn;
+}
+
+void Channel::setwritecallback(std::function<void()>fn)
+{
+	writecallback_ = fn;
+}
+
+
+
+FILE: Connection.cpp
+#include"Connection.h"
+
+Connection::Connection(EventLoop* loop,std::unique_ptr<Socket>clientsock)
+	:loop_(loop),clientsock_(std::move(clientsock)),disconnect_(false),clientchannel_(new Channel(loop_,clientsock_->fd()))
+{
+	// clientchannel_ = new Channel(loop_,clientsock_->fd());
+	clientchannel_->setreadcallback(std::bind(&Connection::onmessage,this));
+	clientchannel_->setclosecallback(std::bind(&Connection::closecallback,this));
+	clientchannel_->seterrorcallback(std::bind(&Connection::errorcallback,this));
+	clientchannel_->setwritecallback(std::bind(&Connection::writecallback,this));
+	clientchannel_->useet();
+	clientchannel_->enablereading();
+
+}
+
+Connection::~Connection()
+{
+	// delete clientchannel_;
+	// delete clientsock_;
+	// printf("该连接已清除\n");
+}
+
+int Connection::fd() const
+{
+	return clientsock_->fd();
+}
+
+std::string Connection::ip() const
+{
+	return clientsock_->ip();
+}
+
+uint16_t Connection::port() const
+{
+	return clientsock_->port();
+}
+
+void Connection::closecallback()
+{
+	disconnect_ = true;
+	clientchannel_->remove();
+	closecallback_(shared_from_this());
+}
+void Connection::errorcallback()
+{
+	disconnect_ = true;
+	clientchannel_->remove();
+	errorcallback_(shared_from_this());	
+}
+
+void Connection::writecallback()
+{
+	// 尝试把发送缓存区的全部数据发送出去
+	int writen = ::send(fd(),outputbuffer_.data(),outputbuffer_.size(),0);
+
+	if(writen>0)
+	{
+		outputbuffer_.erase(0,writen);	// 删除outputbuffer_里已发送出的数据
+	}
+	if(outputbuffer_.size()==0)
+	{
+		clientchannel_->disablewriting();// 如果数据为0了，那就关闭监听可写事件，避免一致返回可写事件
+		sendcompletecallback_(shared_from_this());
+	}
+}
+
+
+void Connection::setclosecallback(std::function<void(spConnection)>fn)
+{
+	closecallback_ = fn;
+}
+
+void Connection::seterrorcallback(std::function<void(spConnection)>fn)
+{
+	errorcallback_ = fn;
+}
+
+void Connection::setonmessagecallback(std::function<void(spConnection,std::string&)>fn)
+{
+	onmessagecallback_ = fn; 
+}
+
+void Connection::setsendcompletecallback(std::function<void(spConnection)>fn)
+{
+	sendcompletecallback_ = fn;
+}
+
+
+void Connection::onmessage()
+{
+	char buffer[1024];
+	while(1)
+	{
+		bzero(&buffer,sizeof(buffer));
+		ssize_t nread = read(fd(),buffer,sizeof(buffer));
+
+		if(nread>0)
+		{
+			inputbuffer_.append(buffer,nread);
+		}
+		else if(nread == -1 && errno == EINTR)
+		{
+			continue;
+		}
+		else if(nread==-1 &&((errno==EAGAIN)||(errno==EWOULDBLOCK)))	// 读取完全部数据
+		{
+			while(1)
+			{
+				int len;
+				memcpy(&len,inputbuffer_.data(),4);
+				if(inputbuffer_.size()<len+4)
+					break;
+				
+				std::string message(inputbuffer_.data()+4,len);	
+				inputbuffer_.erase(0,len+4);	
+				printf("message(eventfd=%d):%s.\n",fd(),message.c_str());
+				lastatime_ = Timestamp::now();		// 更新Connection时间戳
+				// std::cout<<"lastatime = "<<lastatime_.tostring()<<std::endl;
+
+				onmessagecallback_(shared_from_this(),message);
+			}
+			break;
+		}
+		else if(nread == 0)
+		{
+			// clientchannel_->remove();
+			closecallback();
+			break;	
+		}
+	}
+}
+
+
+void Connection::send(std::string data)
+{
+
+	if(disconnect_ == true)
+	{
+		printf("客户端已经断开连接，send()直接返回。\n");
+		return;
+	}
+	if(loop_->isinloopthread())
+	{
+		// 如果当前线程是IO线程，直接执行发送数据操作
+		// printf("send() 在事件循环的线程中。\n");
+		sendinloop(data);
+	}
+	else
+	{
+		// 如果当前线程不是IO线程，把发送数据的操作交给IO线程去执行
+		// printf("send() 不在事件循环的线程中。\n");
+		loop_->queueinloop(std::bind(&Connection::sendinloop,this,std::move(data)));
+	}
+}
+
+// 这个是IO事件
+void Connection::sendinloop(const std::string& data)
+{
+	outputbuffer_.appendwithhead(data.data(),data.size());
+	clientchannel_->enablewriting();
+}
+
+bool Connection::timeout(time_t now,int val)
+{
+	return now - lastatime_.toint() > val;
+}
+
+
+
+FILE: EchoServer.cpp
+#include"EchoServer.h"
+
+EchoServer::EchoServer(const std::string &ip,const uint16_t port,int subthreadnum,int workthreadnum)
+	:tcpserver_(ip,port,subthreadnum),threadpool_(workthreadnum,"WORKS")
+{
+	tcpserver_.setnewconnectioncb(std::bind(&EchoServer::HandleNewConnection,this,std::placeholders::_1));
+	tcpserver_.setcloseconnectioncb(std::bind(&EchoServer::HandleClose,this,std::placeholders::_1));
+	tcpserver_.seterrorconnectioncb(std::bind(&EchoServer::HandleError,this,std::placeholders::_1));
+	tcpserver_.setonmessagecb(std::bind(&EchoServer::HandleMessage,this,std::placeholders::_1,std::placeholders::_2));
+	tcpserver_.setsendcompletecb(std::bind(&EchoServer::HandleSendComplete,this,std::placeholders::_1));
+	tcpserver_.settimeoutcb(std::bind(&EchoServer::HandleTimeOut,this,std::placeholders::_1));
+}
+
+EchoServer::~EchoServer(){}
+
+void EchoServer::Start()
+{
+	tcpserver_.start();
+}
+
+void EchoServer::HandleNewConnection(spConnection conn)
+{
+	// std::cout<<"New Connection Come in."<<std::endl;
+	printf("new connection(fd=%d,ip=%s,port=%d)ok.\n",conn->fd(),conn->ip().c_str(),conn->port());
+	// 根据业务需求，补充代码
+}
+void EchoServer::HandleClose(spConnection conn)
+{
+	printf("connection closed(fd=%d,ip=%s,port=%d)ok.\n",conn->fd(),conn->ip().c_str(),conn->port());
+	// std::cout<<"New Connection Come out"<<std::endl;
+        // 根据业务需求，补充代码
+}
+void EchoServer::HandleError(spConnection conn)
+{
+	// std::cout<<"EchoServer conn error"<<std::endl;
+        // 根据业务需求，补充代码
+}
+void EchoServer::HandleSendComplete(spConnection conn)
+{
+	// std::cout<<"Message send complete."<<std::endl;
+        // 根据业务需求，补充代码
+}
+void EchoServer::HandleTimeOut(EventLoop *loop)
+{
+	// std::cout<<"EchoServer timeout."<<std::endl;
+        // 根据业务需求，补充代码
+}
+void EchoServer::OnMessage(spConnection conn,std::string &message)
+{
+	message = "repay:" + message;
+	conn->send(message.data());
+	
+}
+void EchoServer::HandleMessage(spConnection conn,std::string &message)
+{
+	if(threadpool_.size()==0)
+	{
+		// 不使用工作线程
+		OnMessage(conn,message);
+	}
+	else
+	{
+		// 把业务处理的函数，添加到线程池任务队列中
+		threadpool_.addtask(std::bind(&EchoServer::OnMessage,this,conn,message));
+	}
+}
+
+void EchoServer::Stop()
+{
+	// 停止工作线程
+	threadpool_.stop();
+	printf("工作线程已停止\n");
+
+	// 停止IO线程
+	tcpserver_.stop();
+}
+
+
+FILE: Epoll.cpp
+#include"Epoll.h"
+
+Epoll::Epoll()
+{
+	epollfd_ = epoll_create(1);
+	if(epollfd_<0)
+	{
+		printf("epoll_create() failed(%d).\n",errno);
+		exit(-1);
+	}
+}
+
+Epoll::~Epoll()
+{
+	close(epollfd_);
+}
+
+void Epoll::updatechannel(Channel *ch)
+{
+	struct epoll_event ev;
+	ev.data.ptr = ch;
+	ev.events = ch->events();
+	
+	if(ch->inepoll())
+	{
+		int ret = epoll_ctl(epollfd_,EPOLL_CTL_MOD,ch->fd(),&ev);
+		if(ret==-1)
+		{
+			perror("epoll_ctl");
+			exit(-1);
+		}
+	}
+	else
+	{
+		int ret = epoll_ctl(epollfd_,EPOLL_CTL_ADD,ch->fd(),&ev);
+		if(ret==-1)
+		{
+			perror("epoll_ctl");
+			exit(-1);
+		}
+	}
+	ch->setinepoll();
+}
+
+std::vector<Channel*> Epoll::loop(int timeout)
+{
+	// 改为Channel*类型
+	std::vector<Channel*>channels;
+	bzero(events_,sizeof(events_));
+
+	int infds = epoll_wait(epollfd_,events_,MaxEvents,timeout);
+	if(infds<0)
+	{
+		perror("epoll_wait()");
+		exit(-1);
+	}
+	if(infds==0)
+	{
+		return channels;
+	}
+	for(int i=0;i<infds;i++)
+	{
+		// 这里先取出有事件发生的ch(相当于fd,因为一一对应)
+		Channel* ch = (Channel *)events_[i].data.ptr;
+		// 在对应的ch里记录下所发生的事件，这也就是revents_的作用了
+		ch->setrevents(events_[i].events);
+		// 把所有有事件发生的events_(channel)打包返回
+		channels.push_back(ch);
+	}
+	return channels;
+}
+
+void Epoll::removechannel(Channel* ch)
+{
+	if(ch->inepoll())
+	{
+		printf("removechannel().\n");
+		int ret = epoll_ctl(epollfd_,EPOLL_CTL_DEL,ch->fd(),0);
+		if(ret==-1)
+		{
+			perror("epoll_ctl() failed.\n");
+			exit(-1);
+		}
+	}
+}
+
+
+
+FILE: EventLoop.cpp
+#include"EventLoop.h"
+
+// 创建一个定时器文件描述符并设置单次超时
+int createtimerfd(int sec = 30)
+{
+	// 创建定时器句柄，单调时间，自动关闭，非阻塞
+	int tfd = timerfd_create(CLOCK_MONOTONIC,TFD_CLOEXEC|TFD_NONBLOCK);
+	struct itimerspec timeout;
+	memset(&timeout,0,sizeof(struct itimerspec));	
+	timeout.it_value.tv_sec = sec;		// 定时时间，设置为sec
+	timeout.it_value.tv_nsec = 0;		// 纳秒位数
+	timerfd_settime(tfd,0,&timeout,0);	// 设置到句柄上，启动定时器
+	return tfd;				// 返回建好的定时器文件描述符
+}
+
+EventLoop::EventLoop(bool mainloop,int timetvl, int timeout)
+	:ep_(new Epoll),
+	mainloop_(mainloop),
+	timetvl_(timetvl),
+	timeout_(timeout),
+	wakeupfd_(eventfd(0,EFD_NONBLOCK)),
+	wakechannel_(new Channel(this,wakeupfd_)),
+	timerfd_(createtimerfd(timeout_)),
+	timerchannel_(new Channel(this,timerfd_)),
+	stop_(false)
+{
+	// 下面虽然都是绑的readcallback，但不是同一个channel，也就是同一颗树下不同叶子参数相同信号，做出的回应是不同
+	wakechannel_->setreadcallback(std::bind(&EventLoop::handlewakeup,this));
+	wakechannel_->enablereading();
+	
+	timerchannel_->setreadcallback(std::bind(&EventLoop::handletimer,this));
+	timerchannel_->enablereading();
+}
+
+EventLoop::~EventLoop()
+{
+	// delete ep_;
+}
+
+void EventLoop::run()
+{
+	// run一定发生在主事件循环里，即线程ID一定是IO线程的ID
+	threadid_ = syscall(SYS_gettid);	// 获取事件循环所在线程的ID
+	while(stop_ == false)
+	{
+		std::vector<Channel*> channels = ep_->loop();
+	
+		// 此处加一个判断，channels是否为空
+		// 如果为空，表示超时，回调TcpServer::epolltimeout()
+		if(channels.size()==0)
+		{
+			epolltimeoutcallback_(this);
+		}
+		else
+		{
+			for(auto &ch:channels)
+			{
+				ch->handleevent();	
+			}
+		}
+	}
+}
+
+void EventLoop::stop()
+{
+	stop_ = true;
+	wakeup();
+}
+
+void EventLoop::updatechannel(Channel *ch)
+{
+	ep_->updatechannel(ch);
+}
+
+void EventLoop::removechannel(Channel* ch)
+{
+	ep_->removechannel(ch);
+}
+
+void EventLoop::setepolltimeoutcallback(std::function<void(EventLoop*)>fn)
+{
+	epolltimeoutcallback_ = fn;
+}
+
+bool EventLoop::isinloopthread()
+{
+	return threadid_ == syscall(SYS_gettid);
+}
+
+void EventLoop::queueinloop(std::function<void()>fn)
+{
+	{
+		std::lock_guard<std::mutex>gd(mutex_);
+		taskqueue_.push(fn);
+	}
+	// 唤醒事件循环
+	wakeup();
+}
+
+
+void EventLoop::wakeup()
+{
+	uint64_t val = 1;
+	write(wakeupfd_,&val,sizeof(val));
+}
+
+void EventLoop::handlewakeup()
+{
+	// printf("handlewakeup() thread id is %ld.\n",syscall(SYS_gettid));
+
+	uint64_t val;
+	read(wakeupfd_,&val,sizeof(val));	// 从eventfd里读出来，如果不读，eventfd的读事件会一直触发（水平触发）
+	
+	std::function<void()>fn;
+	std::lock_guard<std::mutex>gd(mutex_);	// 给任务队列加锁
+	while(taskqueue_.size()>0)
+	{
+		fn = std::move(taskqueue_.front());
+		taskqueue_.pop();
+		fn();				// 执行任务
+	}
+}
+
+void EventLoop::handletimer()
+{
+	// 重新计时
+	struct itimerspec timeout;
+	memset(&timeout,0,sizeof(struct itimerspec));	
+	timeout.it_value.tv_sec = timetvl_;		// 定时时间，设置为sec
+	timeout.it_value.tv_nsec = 0;		// 纳秒位数
+	timerfd_settime(timerfd_,0,&timeout,0);	// 设置到句柄上，启动定时器
+
+	if(mainloop_)
+	{
+		// printf("主事件循环的闹钟时间到了");
+	}
+	else
+	{
+		// printf("从事件循环的闹钟时间到了");
+		// printf("EventLoop::handletimer() thread is %ld.fd",syscall(SYS_gettid));
+		time_t now = time(0);
+		std::vector<int> to_delete; // 记录要踢掉的连接fd
+		for (auto& aa : conns_) {
+			if (aa.second->timeout(now,timeout_)) {
+				to_delete.push_back(aa.first);
+			}
+		}
+		// 统一删除
+		for (int fd : to_delete) {
+			// std::cout<<" "<<fd;
+			{
+				std::lock_guard<std::mutex>gd(mmutex_);
+				conns_.erase(fd);
+			}
+			timercallback_(fd);
+		}
+		// std::cout<<std::endl;
+	} 
+}
+
+void EventLoop::newconnection(spConnection conn)
+{
+	std::lock_guard<std::mutex>gd(mmutex_);
+	conns_[conn->fd()] = conn;
+}
+
+void EventLoop::settimercallback(std::function<void(int)>fn)
+{
+	timercallback_ = fn;
+}
+
+
+
+
+FILE: InetAddress.cpp
+#include"InetAddress.h"
+
+InetAddress::InetAddress(){}
+
+InetAddress::InetAddress(const std::string &ip,const uint16_t port)
+{
+	addr_.sin_family = AF_INET;
+	inet_pton(AF_INET,ip.c_str(),&addr_.sin_addr);
+	addr_.sin_port = htons(port);
+}
+
+InetAddress::InetAddress(const sockaddr_in addr):addr_(addr){}
+
+InetAddress::~InetAddress(){}
+
+const char* InetAddress::ip() const
+{
+	return inet_ntoa(addr_.sin_addr);
+}
+
+uint16_t InetAddress::port() const
+{
+	return ntohs(addr_.sin_port);
+}
+
+const struct sockaddr* InetAddress::addr() const
+{
+	return (struct sockaddr*)&addr_;
+}
+
+void InetAddress::setaddr(sockaddr_in clientaddr)
+{
+	addr_ = clientaddr;
+}
+
+
+
+FILE: Socket.cpp
+#include"Socket.h"
+
+int createnonblocking()
+{
+	int listenfd = socket(AF_INET,SOCK_STREAM|SOCK_NONBLOCK,IPPROTO_TCP);
+	if(listenfd<0)
+	{
+		perror("socket");
+		return -1;
+	}
+	return listenfd;
+}
+
+Socket::Socket(int fd):fd_(fd){}
+
+Socket::~Socket()
+{
+	::close(fd_);
+}
+
+int Socket::fd() const
+{
+	return fd_;
+}
+
+void Socket::settcpnodelay(bool on){
+        int optval = on?1:0;
+        ::setsockopt(fd_,IPPROTO_TCP,TCP_NODELAY,&optval,sizeof(optval));
+}
+void Socket::setreuseaddr(bool on){
+        int optval = on?1:0;
+        ::setsockopt(fd_,SOL_SOCKET,SO_REUSEADDR,&optval,sizeof(optval));
+}
+void Socket::setreuseport(bool on){
+        int optval = on?1:0;
+        ::setsockopt(fd_,SOL_SOCKET,SO_REUSEPORT,&optval,sizeof(optval));
+}
+void Socket::setkeepalive(bool on){
+        int optval = on?1:0;
+        ::setsockopt(fd_,SOL_SOCKET,SO_KEEPALIVE,&optval,sizeof(optval));
+}
+
+void Socket::bind(const InetAddress& serveraddr)
+{
+	int ret = ::bind(fd_,serveraddr.addr(),sizeof(sockaddr));
+	if(ret<0)
+	{
+		perror("bind");
+		close(fd_);
+		exit(-1);
+	}
+	setipport(serveraddr.ip(),serveraddr.port());
+}
+
+
+void Socket::listen(int nn)
+{
+	int ret = ::listen(fd_,nn);
+	if(ret<0)
+	{
+		perror("listen");
+		close(fd_);
+		exit(-1);
+	}
+}
+
+void Socket::setipport(const std::string &ip,uint16_t port)
+{
+	ip_ = ip;
+	port_ = port;
+}
+
+int Socket::accept(InetAddress& clientaddr)
+{
+	sockaddr_in peersock;
+	socklen_t len = sizeof(peersock);
+	int clientfd = accept4(fd_,(sockaddr*)&peersock,&len,SOCK_NONBLOCK);
+
+	clientaddr.setaddr(peersock);
+	return clientfd;
+}
+
+std::string Socket::ip() const
+{
+	return ip_;
+}
+
+uint16_t Socket::port() const
+{
+	return port_;
+}
+		
+
+
+
+
+
+
+FILE: TcpServer.cpp
+#include"TcpServer.h"
+TcpServer::TcpServer(const std::string &ip,const uint16_t port,int threadnum)
+	:threadnum_(threadnum),mainloop_(new EventLoop(true)),acceptor_(mainloop_.get(),ip,port),threadpool_(threadnum,"IO")
+{
+	// mainloop_ = new EventLoop;
+	mainloop_->setepolltimeoutcallback(std::bind(&TcpServer::epolltimeout,this,std::placeholders::_1));
+	
+	// acceptor_ = new Acceptor(mainloop_,ip,port);
+	acceptor_.setnewconnectioncb(std::bind(&TcpServer::newconnection,this,std::placeholders::_1));
+
+	// threadpool_ = new ThreadPool(threadnum_,"IO");	// 创建线程
+	
+	// 创建从事件循环
+	for(int ii=0;ii<threadnum;ii++)
+	{
+		subloops_.emplace_back(new EventLoop(false,5,10));	// 创建并存入subloops_中
+		subloops_[ii]->setepolltimeoutcallback(std::bind(&TcpServer::epolltimeout,this,std::placeholders::_1));
+		subloops_[ii]->settimercallback(std::bind(&TcpServer::removeconn,this,std::placeholders::_1));
+		
+		threadpool_.addtask(std::bind(&EventLoop::run,subloops_[ii].get()));
+	}
+}
+
+TcpServer::~TcpServer()
+{
+	// delete acceptor_;
+	// delete mainloop_;
+	// for(auto &aa:subloops)
+	// {
+	// 	delete aa;
+	// }
+	// delete threadpool_;
+}
+
+void TcpServer::start()
+{
+	mainloop_->run();
+}
+
+void TcpServer::stop()
+{
+	// 停止主事件循环
+	// 停止从事件循环
+	// 停止IO线程
+	mainloop_->stop();
+	printf("主事件循环已停止.\n");
+	
+	for(int i=0;i<threadnum_;i++)
+	{
+		subloops_[i]->stop();
+	}
+	printf("从事件循环已停止.\n");
+	
+	threadpool_.stop();
+	printf("IO线程池已停止.\n");
+
+}
+
+void TcpServer::newconnection(std::unique_ptr<Socket> clientsock)
+{
+	int idx = clientsock->fd() % threadnum_;	// 一个算法，为了得到一对一的 i
+	spConnection conn(new Connection(subloops_[idx].get(),std::move(clientsock)));			
+
+	conn->setclosecallback(std::bind(&TcpServer::closeconnection,this,std::placeholders::_1));
+	conn->seterrorcallback(std::bind(&TcpServer::errorconnection,this,std::placeholders::_1));
+	conn->setonmessagecallback(std::bind(&TcpServer::onmessage,this,std::placeholders::_1,std::placeholders::_2));
+	conn->setsendcompletecallback(std::bind(&TcpServer::sendcomplete,this,std::placeholders::_1));
+
+	{
+		std::lock_guard<std::mutex>gd(mmutex_);
+		conns_[conn->fd()] = conn;
+	}
+	subloops_[idx]->newconnection(conn);	// 将连接加入到 事件循环的 map 里
+	
+	// 建立后回调
+	if(newconnectioncb_) newconnectioncb_(conn);
+}
+
+void TcpServer::closeconnection(spConnection conn)
+{
+	// 析构前回调
+	if(closeconnectioncb_)
+	{
+		closeconnectioncb_(conn);
+	}
+
+	{
+		std::lock_guard<std::mutex>gd(mmutex_);
+		conns_.erase(conn->fd());
+	}
+}
+void TcpServer::errorconnection(spConnection conn)
+{
+	if(errorconnectioncb_){
+		errorconnectioncb_(conn);
+	}
+
+	{
+		std::lock_guard<std::mutex>gd(mmutex_);
+		conns_.erase(conn->fd());
+	}
+}
+
+void TcpServer::onmessage(spConnection conn,std::string& message)
+{
+	if(onmessagecb_) onmessagecb_(conn,message);
+}
+
+void TcpServer::sendcomplete(spConnection conn)
+{
+	if(sendcompletecb_) sendcompletecb_(conn);
+}
+
+void TcpServer::epolltimeout(EventLoop *loop)
+{
+	if(timeoutcb_) timeoutcb_(loop);
+}
+
+
+void TcpServer::setnewconnectioncb(std::function<void(spConnection)>fn)
+{
+	newconnectioncb_ = fn;
+}
+void TcpServer::setcloseconnectioncb(std::function<void(spConnection)>fn)
+{
+	closeconnectioncb_ = fn;
+}
+void TcpServer::seterrorconnectioncb(std::function<void(spConnection)>fn)
+{
+	errorconnectioncb_ =fn;
+}
+void TcpServer::setonmessagecb(std::function<void(spConnection,std::string &message)>fn)
+{
+	onmessagecb_ = fn;
+}
+void TcpServer::setsendcompletecb(std::function<void(spConnection)>fn)
+{
+	sendcompletecb_ = fn;
+}
+void TcpServer::settimeoutcb(std::function<void(EventLoop*)>fn)
+{
+	timeoutcb_ = fn;
+}
+
+void TcpServer::removeconn(int fd)
+{
+	std::lock_guard<std::mutex>gd(mmutex_);
+	conns_.erase(fd);
+}
+
+
+
+FILE: ThreadPool.cpp
+#include"ThreadPool.h"
+
+/*
+	std::vector<std::thread> threads_;		// 线程池中的线程
+	std::queue<std::function<void()>>taskqueue_;	// 任务队列
+	std::mutex mutex_;				// 任务队列同步的互斥锁
+	std::condition_variable condition_;		// 任务队列同步的条件变量
+	std::atomic_bool stop_;				// 在析构函数中，把stop_变为true,全部线程退出
+	std::string threadtype_;			// IO 或者 WORKS
+*/
+
+ThreadPool::ThreadPool(size_t threadnum,const std::string& threadtype):stop_(false),threadtype_(threadtype)
+{
+	for(size_t ii=0;ii<threadnum;ii++)
+	{
+		threads_.emplace_back([this]()
+		{
+
+		// 显示线程ID
+			printf("create %s thread(%ld).\n",threadtype_.c_str(),syscall(SYS_gettid));
+			while(stop_==false)
+			{
+				std::function<void()>task;
+			
+				{
+					std::unique_lock<std::mutex> lock(this->mutex_);
+					// 如果lambda返回true,那就往下执行，否则就阻塞wait
+					this->condition_.wait(lock,[this]()
+					{
+						return (this->stop_==true) || (this->taskqueue_.empty()==false);
+					});
+					// 判断是否打烊了
+					if((this->stop_==true) && (this->taskqueue_.empty()==true))
+					{
+						return;
+					}
+					// 有新任务
+					task = std::move(this->taskqueue_.front());
+					this->taskqueue_.pop();
+				}
+				// printf("%s(%ld)execute task.\n",threadtype_.c_str(),syscall(SYS_gettid));
+				task();
+			}
+		});	
+	}
+}
+
+void ThreadPool::addtask(std::function<void()>task)
+{
+	{
+		std::lock_guard<std::mutex>lock(mutex_);
+		taskqueue_.push(task);
+	}
+	condition_.notify_one();
+}
+
+ThreadPool::~ThreadPool()
+{
+	stop();
+}
+
+size_t ThreadPool::size()
+{
+	return threads_.size();
+}
+
+void ThreadPool::stop()
+{
+	if(stop_) return;
+	stop_ = true;
+	condition_.notify_all();
+
+	for(std::thread &th:threads_)
+	{
+		th.join();
+	}
+}
+
+
+FILE: Timestamp.cpp
+#include "Timestamp.h"
+#include <ctime>
+
+// 默认构造函数，用当前时间初始化对象
+Timestamp::Timestamp() {
+    secsinceepoch_ = time(nullptr);
+}
+
+// 用一个整数时间初始化对象
+Timestamp::Timestamp(int64_t secsinceepoch) 
+    : secsinceepoch_(secsinceepoch) 
+{
+}
+
+// 静态方法：返回当前时间的 Timestamp 对象
+Timestamp Timestamp::now() {
+    return Timestamp(); // 调用默认构造函数获取当前时间
+}
+
+// 返回整数表示的时间
+time_t Timestamp::toint() const {
+    return secsinceepoch_;
+}
+
+// 返回字符串表示的时间 格式：yyyy-mm-dd hh24:mi:ss
+std::string Timestamp::tostring() const {
+    char buf[64] = {0};
+    struct tm tm_time;
+    
+    // 使用线程安全的 localtime_r 将 time_t 转换为明文时间结构体 tm
+    // localtime_r 是 Linux 下推荐的写法，防止多线程竞争静态缓冲区
+    localtime_r(&secsinceepoch_, &tm_time);
+
+    snprintf(buf, sizeof(buf), "%4d-%02d-%02d %02d:%02d:%02d",
+             tm_time.tm_year + 1900, 
+             tm_time.tm_mon + 1,    
+             tm_time.tm_mday,
+             tm_time.tm_hour,
+             tm_time.tm_min,
+             tm_time.tm_sec);
+    return buf;
+}
+
+
+
+FILE: client.cpp
+
+#include<stdio.h>
+#include<stdlib.h>
+#include<unistd.h>
+#include<errno.h>
+#include<string.h>
+#include<netinet/in.h>
+#include<arpa/inet.h>
+#include<time.h>
+
+int main(int argc,char *argv[]){
+	if(argc!=3){
+		printf("usage:./client ip prot\n");
+		printf("example:./client 192.168.150.128 2028\n\n");
+		return -1;
+	}
+	
+	int sockfd;
+	struct sockaddr_in serveraddr;
+	char buf[1024];
+	if((sockfd = socket(AF_INET,SOCK_STREAM,0))<0){
+		printf("socket() failed.\n");
+		return -1;
+	}
+	memset(&serveraddr,0,sizeof(serveraddr));
+	serveraddr.sin_family = AF_INET;
+	serveraddr.sin_port = htons(atoi(argv[2]));
+	inet_pton(AF_INET,argv[1],&serveraddr.sin_addr);
+
+	if(connect(sockfd,(struct sockaddr*)&serveraddr,sizeof(serveraddr))!=0){
+		printf("connect(%s:%s)failed.\n",argv[1],argv[2]);
+		close(sockfd);
+		return -1;
+	}
+	
+	printf("connect ok\n");
+  	for (int ii=0;ii<1;ii++)
+        {
+   	    	 memset(buf,0,sizeof(buf));
+       		 sprintf(buf,"这是第%d个超级女生。",ii);
+
+       		 char tmpbuf[1024];    	 // 临时的buffer，报文头部+报文内容。
+       		 memset(tmpbuf,0,sizeof(tmpbuf));
+       		 int len=strlen(buf);   	 // 计算报文的大小。
+       		 memcpy(tmpbuf,&len,4);   	 // 拼接报文头部。
+       		 memcpy(tmpbuf+4,buf,len);       // 拼接报文内容。
+
+        	send(sockfd,tmpbuf,len+4,0);     // 把请求报文发送给服务端。
+        
+		// int len;	// 存放包头
+		recv(sockfd,&len,4,0);	// 先读取一个头到len内
+		memset(buf,0,sizeof(buf));  
+		recv(sockfd,buf,len,0);  // 读取下面内容到空 buf 内
+       	printf("recv:%s\n",buf); 
+   	 }
+
+	 
+	 sleep(100);
+} 
+
+
+
+FILE: echoserver.cpp
+#include<signal.h>
+#include"EchoServer.h"
+
+EchoServer *echoserver;
+
+
+void Stop(int sig)
+{
+	printf("sig=%d\n",sig);
+	// 调用EchoServer::Stop()停止服务
+	echoserver->Stop();
+	printf("echoserver已停止。\n");
+	delete echoserver;
+	exit(0);
+}
+
+int main(int argc,char *argv[])
+{
+	if(argc!=3)
+	{
+		printf("nonono");
+		return -1;
+	}
+
+	signal(SIGTERM,Stop);	// 信号15，系统kill或killall命令默认发送的信号
+	signal(SIGINT,Stop);	// 信号2，按Ctrl + C 发送
+	
+	echoserver = new EchoServer(argv[1],atoi(argv[2]),2,3);
+	echoserver->Start();
+	
+	return 0;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
