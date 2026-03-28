@@ -1,6 +1,3 @@
----
-
-```markdown
 # High-Concurrency C++ Network Library
 
 ![C++](https://img.shields.io/badge/Language-C++11/14/17-blue.svg)
