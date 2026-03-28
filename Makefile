@@ -1,65 +1,43 @@
-# ===============================
-# 项目名称（可执行文件）
-# ===============================
-TARGET_SERVER = echoserver
-TARGET_CLIENT = client
-
-# ===============================
-# 编译器 & 编译选项
-# ===============================
+# ================= 编译器配置 =================
 CXX = g++
-CXXFLAGS = -g -Wall -std=c++11
+CXXFLAGS = -g -Wall -std=c++11 -I./muduo
 LDFLAGS = -lpthread
 
-# ===============================
-# 源文件（统一管理，方便扩展）
-# ===============================
-SERVER_SRCS = echoserver.cpp \
-              InetAddress.cpp Socket.cpp Epoll.cpp Channel.cpp \
-              EventLoop.cpp TcpServer.cpp Acceptor.cpp \
-              Connection.cpp Buffer.cpp EchoServer.cpp \
-              ThreadPool.cpp Timestamp.cpp
+# ================= 目标程序 =================
+TARGET = echoserver
 
-CLIENT_SRCS = client.cpp
+# ================= 源文件 =================
+SRCS = example/echoserver.cpp \
+       muduo/InetAddress.cpp \
+       muduo/Socket.cpp \
+       muduo/Epoll.cpp \
+       muduo/Channel.cpp \
+       muduo/EventLoop.cpp \
+       muduo/TcpServer.cpp \
+       muduo/Acceptor.cpp \
+       muduo/Connection.cpp \
+       muduo/Buffer.cpp \
+       muduo/EchoServer.cpp \
+       muduo/ThreadPool.cpp \
+       muduo/Timestamp.cpp
 
-# ===============================
-# 目标文件（.cpp → .o）
-# 自动替换规则（很重要）
-# ===============================
-SERVER_OBJS = $(SERVER_SRCS:.cpp=.o)
-CLIENT_OBJS = $(CLIENT_SRCS:.cpp=.o)
+# ================= 目标文件 =================
+OBJS = $(SRCS:.cpp=.o)
 
-# ===============================
-# 默认目标（make 时执行）
-# ===============================
-all: $(TARGET_CLIENT) $(TARGET_SERVER)
+# ================= 默认目标 =================
+all: $(TARGET)
 
-# ===============================
-# 生成 server
-# ===============================
-$(TARGET_SERVER): $(SERVER_OBJS)
+# ================= 链接 =================
+$(TARGET): $(OBJS)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 
-# ===============================
-# 生成 client
-# ===============================
-$(TARGET_CLIENT): $(CLIENT_OBJS)
-	$(CXX) $(CXXFLAGS) -o $@ $^
-
-# ===============================
-# 通用编译规则（核心优化点🔥）
-# 把 .cpp 编译成 .o（避免重复编译）
-# ===============================
+# ================= 编译规则 =================
 %.o: %.cpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-# ===============================
-# 清理
-# ===============================
+# ================= 清理 =================
 clean:
-	rm -f *.o $(TARGET_CLIENT) $(TARGET_SERVER)
+	rm -f $(TARGET) $(OBJS)
 
-# ===============================
-# 伪目标（避免冲突）
-# ===============================
+# ================= 伪目标 =================
 .PHONY: all clean
