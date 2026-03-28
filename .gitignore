@@ -1,0 +1,10 @@
+# build files
+*.o
+*.out
+
+# executables
+echoserver
+client
+
+# temp
+*.log
