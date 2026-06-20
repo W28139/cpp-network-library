@@ -65,7 +65,6 @@ void TcpServer::newconnection(std::unique_ptr<Socket> clientsock)
 	conn->seterrorcallback(std::bind(&TcpServer::errorconnection,this,std::placeholders::_1));
 	conn->setonmessagecallback(std::bind(&TcpServer::onmessage,this,std::placeholders::_1,std::placeholders::_2));
 	conn->setsendcompletecallback(std::bind(&TcpServer::sendcomplete,this,std::placeholders::_1));
-
 	{
 		std::lock_guard<std::mutex>gd(mmutex_);
 		conns_[conn->fd()] = conn;

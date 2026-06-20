@@ -101,7 +101,7 @@ void EventLoop::queueinloop(std::function<void()>fn)
 void EventLoop::wakeup()
 {
 	uint64_t val = 1;
-	write(wakeupfd_,&val,sizeof(val));
+	ssize_t n = write(wakeupfd_,&val,sizeof(val));
 }
 
 void EventLoop::handlewakeup()
@@ -109,7 +109,7 @@ void EventLoop::handlewakeup()
 	// printf("handlewakeup() thread id is %ld.\n",syscall(SYS_gettid));
 
 	uint64_t val;
-	read(wakeupfd_,&val,sizeof(val));	// 从eventfd里读出来，如果不读，eventfd的读事件会一直触发（水平触发）
+	ssize_t n = read(wakeupfd_,&val,sizeof(val));	// 从eventfd里读出来，如果不读，eventfd的读事件会一直触发（水平触发）
 	
 	std::function<void()>fn;
 	std::lock_guard<std::mutex>gd(mutex_);	// 给任务队列加锁
