@@ -1,77 +1,168 @@
-#include"my_muduo/ThreadPool.h"
+#include "my_muduo/ThreadPool.h"
+#include <sys/prctl.h>
+#include <unistd.h>
+#include <iostream>
 
-/*
-	std::vector<std::thread> threads_;		// 线程池中的线程
-	std::queue<std::function<void()>>taskqueue_;	// 任务队列
-	std::mutex mutex_;				// 任务队列同步的互斥锁
-	std::condition_variable condition_;		// 任务队列同步的条件变量
-	std::atomic_bool stop_;				// 在析构函数中，把stop_变为true,全部线程退出
-	std::string threadtype_;			// IO 或者 WORKS
-*/
-
-ThreadPool::ThreadPool(size_t threadnum,const std::string& threadtype):stop_(false),threadtype_(threadtype)
+namespace mymuduo
 {
-	for(size_t ii=0;ii<threadnum;ii++)
-	{
-		threads_.emplace_back([this]()
-		{
 
-		// 显示线程ID
-			printf("create %s thread(%ld).\n",threadtype_.c_str(),syscall(SYS_gettid));
-			while(stop_==false)
-			{
-				std::function<void()>task;
-			
-				{
-					std::unique_lock<std::mutex> lock(this->mutex_);
-					// 如果lambda返回true,那就往下执行，否则就阻塞wait
-					this->condition_.wait(lock,[this]()
-					{
-						return (this->stop_==true) || (this->taskqueue_.empty()==false);
-					});
-					// 判断是否打烊了
-					if((this->stop_==true) && (this->taskqueue_.empty()==true))
-					{
-						return;
-					}
-					// 有新任务
-					task = std::move(this->taskqueue_.front());
-					this->taskqueue_.pop();
-				}
-				// printf("%s(%ld)execute task.\n",threadtype_.c_str(),syscall(SYS_gettid));
-				task();
-			}
-		});	
-	}
-}
+std::atomic_int ThreadPool::s_generateId_{0};
 
-void ThreadPool::addtask(std::function<void()>task)
+ThreadPool::ThreadPool(int initThreadSize, std::string name)
+    : initThreadSize_(initThreadSize)
+    , threadSizeThreshold_(kDefaultThreadThreshold)
+    , curThreadSize_(0)
+    , idleThreadSize_(0)
+    , taskSize_(0)
+    , taskQueMaxThreshold_(kDefaultTaskThreshold)
+    , poolMode_(PoolMode::MODE_FIXED)
+    , isPoolRunning_(false)
+    , poolName_(std::move(name))
 {
-	{
-		std::lock_guard<std::mutex>lock(mutex_);
-		taskqueue_.push(task);
-	}
-	condition_.notify_one();
+    // 如果构造时指定了线程数，直接开启
+    if (initThreadSize_ > 0)
+    {
+        start();
+    }
 }
 
 ThreadPool::~ThreadPool()
 {
-	stop();
+    stop();
 }
 
-size_t ThreadPool::size()
+void ThreadPool::setMode(PoolMode mode)
 {
-	return threads_.size();
+    if (isPoolRunning_) return;
+    poolMode_ = mode;
+}
+
+void ThreadPool::setTaskQueMaxThreshold(int threshold)
+{
+    if (isPoolRunning_) return;
+    taskQueMaxThreshold_ = threshold;
+}
+
+void ThreadPool::setThreadSizeThreshold(int threshold)
+{
+    if (isPoolRunning_) return;
+    if (poolMode_ == PoolMode::MODE_CACHED)
+        threadSizeThreshold_ = threshold;
+}
+
+void ThreadPool::start()
+{
+    if (isPoolRunning_) return;
+    isPoolRunning_ = true;
+
+    std::lock_guard<std::mutex> lock(taskQueMtx_);
+    for (int i = 0; i < initThreadSize_; i++)
+    {
+        createThread();
+    }
 }
 
 void ThreadPool::stop()
 {
-	if(stop_) return;
-	stop_ = true;
-	condition_.notify_all();
+    bool expected = true;
+    if (!isPoolRunning_.compare_exchange_strong(expected, false)) 
+        return;
 
-	for(std::thread &th:threads_)
-	{
-		th.join();
-	}
+    {
+        std::unique_lock<std::mutex> lock(taskQueMtx_);
+        notEmpty_.notify_all(); // 唤醒所有线程准备自尽
+    }
+
+    // 真正的阻塞回收所有物理线程
+    for (auto& iter : threads_)
+    {
+        if (iter.second.joinable())
+        {
+            iter.second.join(); 
+        }
+    }
+    
+    threads_.clear();
+    curThreadSize_ = 0;
+    idleThreadSize_ = 0;
+    taskSize_ = 0;
 }
+
+void ThreadPool::addTask(Task task)
+{
+    // 直接复用模板函数逻辑，但不关心返回值
+    submitTask(std::move(task));
+}
+
+void ThreadPool::createThread()
+{
+    int tid = s_generateId_++;
+    
+    // 创建线程并立即存入容器
+    threads_.emplace(tid, std::thread(std::bind(&ThreadPool::threadFunc, this, tid)));
+    
+    curThreadSize_++;
+    idleThreadSize_++;
+}
+
+void ThreadPool::threadFunc(int threadId)
+{
+    // 1. 设置线程名 (Linux 特有)
+    // 名字格式例如: IO_LOOP-1, WORKER-2
+    std::string tName = poolName_ + "-" + std::to_string(threadId);
+    ::prctl(PR_SET_NAME, tName.c_str());
+
+    auto lastTime = std::chrono::high_resolution_clock::now();
+
+    while (true)
+    {
+        Task task;
+        {
+            std::unique_lock<std::mutex> lock(taskQueMtx_);
+
+            while (taskQue_.empty())
+            {
+                if (!isPoolRunning_) goto THREAD_EXIT;
+
+                if (poolMode_ == PoolMode::MODE_CACHED)
+                {
+                    if (std::cv_status::timeout == notEmpty_.wait_for(lock, std::chrono::seconds(1)))
+                    {
+                        auto now = std::chrono::high_resolution_clock::now();
+                        auto dur = std::chrono::duration_cast<std::chrono::seconds>(now - lastTime);
+                        if (dur.count() >= kMaxIdleTime && curThreadSize_ > initThreadSize_)
+                        {
+                            goto THREAD_EXIT;
+                        }
+                    }
+                }
+                else
+                {
+                    notEmpty_.wait(lock);
+                }
+            }
+
+            idleThreadSize_--;
+            task = std::move(taskQue_.front());
+            taskQue_.pop();
+            taskSize_--;
+
+            if (!taskQue_.empty()) notEmpty_.notify_one();
+            notFull_.notify_one();
+        }
+
+        if (task) task();
+
+        idleThreadSize_++;
+        lastTime = std::chrono::high_resolution_clock::now();
+    }
+
+THREAD_EXIT:
+    // 注意：这里不需要再从 threads_ map 里删除自己，因为析构时会统一 join
+    // 只需要维护好计数即可
+    curThreadSize_--;
+    idleThreadSize_--;
+    // printf("Thread [%s] exit.\n", tName.c_str());
+}
+
+} // namespace mymuduo

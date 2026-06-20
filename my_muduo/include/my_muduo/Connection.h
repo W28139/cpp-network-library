@@ -1,61 +1,82 @@
 #pragma once
-#include<functional>
-#include<sys/syscall.h>
-#include"Socket.h"
-#include"InetAddress.h"
-#include"Channel.h"
-#include"EventLoop.h"
-#include<atomic>
-#include"Buffer.h"
-#include"Timestamp.h"
-#include<memory>
 
-class Connection;
-class EventLoop;
-class Channel;
-using spConnection = std::shared_ptr<Connection>;
+#include <functional>
+#include <memory>
+#include <atomic>
+#include <string>
 
-class Connection:public std::enable_shared_from_this<Connection>
+#include "my_muduo/Buffer.h"
+#include "my_muduo/Timestamp.h"
+
+namespace mymuduo
 {
-private:
-	EventLoop* loop_;
-	std::unique_ptr<Socket> clientsock_;
-	std::unique_ptr<Channel> clientchannel_;
 
-	Buffer inputbuffer_;
-	Buffer outputbuffer_;
-	
-	std::atomic_bool disconnect_;	// 客户端连接是否已断开，如果已断开，则设置为true
+class EventLoop;
+class Socket;
+class Channel;
 
-	std::function<void(spConnection)>closecallback_;
-	std::function<void(spConnection)>errorcallback_;
-	std::function<void(spConnection,std::string&)>onmessagecallback_;
-	std::function<void(spConnection)>sendcompletecallback_;
-	
-	Timestamp lastatime_;		// 时间戳，创建Connection对象时为当前时间，每收到一个报文，把时间戳更新为当前时间	
-
+/**
+ * @brief TCP 连接类
+ * 封装了一个已建立的客户端连接、对应的 Socket 和 Channel，
+ * 以及该连接特有的输入输出缓冲区。
+ */
+class Connection : public std::enable_shared_from_this<Connection>
+{
 public:
-	Connection(EventLoop* loop,std::unique_ptr<Socket> clientsock);
-	~Connection();
+    using ConnectionPtr = std::shared_ptr<Connection>;
+    using MessageCallback = std::function<void(const ConnectionPtr&, std::string&)>;
+    using Callback = std::function<void(const ConnectionPtr&)>;
 
-	int fd() const;
-	std::string ip() const;
-	uint16_t port() const;
+    Connection(EventLoop* loop, std::unique_ptr<Socket> clientSock);
+    ~Connection();
 
-	void closecallback();
-	void errorcallback();
-	void writecallback();
+    // 获取基本信息
+    int fd() const;
+    std::string ip() const;
+    uint16_t port() const;
 
-	void setclosecallback(std::function<void(spConnection)>fn);
-	void seterrorcallback(std::function<void(spConnection)>fn);
-	void setonmessagecallback(std::function<void(spConnection,std::string&)>fn);
-	void setsendcompletecallback(std::function<void(spConnection)>fn);
+    // 发送数据
+    void send(const std::string& data);
 
-	void onmessage();
+    // 设置各类回调
+    void setOnMessageCallback(MessageCallback cb) { onMessageCallback_ = std::move(cb); }
+    void setSendCompleteCallback(Callback cb) { sendCompleteCallback_ = std::move(cb); }
+    void setCloseCallback(Callback cb) { closeCallback_ = std::move(cb); }
+    void setErrorCallback(Callback cb) { errorCallback_ = std::move(cb); }
 
-	void send(const std::string data);
-	void sendinloop(const std::string& data);
+    // 超时判断
+    bool isTimeout(time_t now, int seconds) const;
 
-	bool timeout(time_t now,int val);	// 判断TCP连接是否超时
+    // 状态管理
+    bool connected() const { return !disconnected_; }
+
+private:
+    // Channel 的事件分发回调
+    void handleRead();
+    void handleWrite();
+    void handleClose();
+    void handleError();
+
+    // 在所属的 Loop 线程中发送数据
+    void sendInLoop(const std::string& data);
+
+private:
+    EventLoop* loop_;
+    std::unique_ptr<Socket> socket_;
+    std::unique_ptr<Channel> channel_;
+
+    Buffer inputBuffer_;  // 接收缓冲区
+    Buffer outputBuffer_; // 发送缓冲区
+
+    std::atomic_bool disconnected_; // 连接断开标志
+
+    // 业务层回调
+    MessageCallback onMessageCallback_;
+    Callback sendCompleteCallback_;
+    Callback closeCallback_;
+    Callback errorCallback_;
+
+    Timestamp lastActiveTime_; // 最后活跃时间戳
 };
 
+} // namespace mymuduo

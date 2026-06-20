@@ -1,171 +1,222 @@
-#include"my_muduo/EventLoop.h"
+#include "my_muduo/EventLoop.h"
+#include "my_muduo/Epoll.h"
+#include "my_muduo/Channel.h"
+#include "my_muduo/Connection.h"
 
-// 创建一个定时器文件描述符并设置单次超时
-int createtimerfd(int sec = 30)
+#include <sys/eventfd.h>
+#include <sys/timerfd.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#include <cstring>
+
+namespace mymuduo
 {
-	// 创建定时器句柄，单调时间，自动关闭，非阻塞
-	int tfd = timerfd_create(CLOCK_MONOTONIC,TFD_CLOEXEC|TFD_NONBLOCK);
-	struct itimerspec timeout;
-	memset(&timeout,0,sizeof(struct itimerspec));	
-	timeout.it_value.tv_sec = sec;		// 定时时间，设置为sec
-	timeout.it_value.tv_nsec = 0;		// 纳秒位数
-	timerfd_settime(tfd,0,&timeout,0);	// 设置到句柄上，启动定时器
-	return tfd;				// 返回建好的定时器文件描述符
+
+// 匿名命名空间，用于辅助函数
+namespace
+{
+// 获取当前线程 ID
+pid_t getTid()
+{
+    return static_cast<pid_t>(::syscall(SYS_gettid));
 }
 
-EventLoop::EventLoop(bool mainloop,int timetvl, int timeout)
-	:ep_(new Epoll),
-	mainloop_(mainloop),
-	timetvl_(timetvl),
-	timeout_(timeout),
-	wakeupfd_(eventfd(0,EFD_NONBLOCK)),
-	wakechannel_(new Channel(this,wakeupfd_)),
-	timerfd_(createtimerfd(timeout_)),
-	timerchannel_(new Channel(this,timerfd_)),
-	stop_(false)
+// 创建定时器 fd
+int createTimerFd(int sec)
 {
-	// 下面虽然都是绑的readcallback，但不是同一个channel，也就是同一颗树下不同叶子参数相同信号，做出的回应是不同
-	wakechannel_->setreadcallback(std::bind(&EventLoop::handlewakeup,this));
-	wakechannel_->enablereading();
-	
-	timerchannel_->setreadcallback(std::bind(&EventLoop::handletimer,this));
-	timerchannel_->enablereading();
+    int tfd = ::timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
+    struct itimerspec timeout;
+    ::memset(&timeout, 0, sizeof(timeout));
+    timeout.it_value.tv_sec = sec;
+    timeout.it_value.tv_nsec = 0;
+    ::timerfd_settime(tfd, 0, &timeout, nullptr);
+    return tfd;
+}
+} // namespace
+
+EventLoop::EventLoop(bool isMainLoop, int timerInterval, int timeout)
+    : stop_(false)
+    , threadId_(getTid())
+    , epoll_(new Epoll())
+    , wakeupFd_(::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC))
+    , wakeChannel_(new Channel(this, wakeupFd_))
+    , timerFd_(createTimerFd(timeout))
+    , timerChannel_(new Channel(this, timerFd_))
+    , timerInterval_(timerInterval)
+    , timeout_(timeout)
+    , isMainLoop_(isMainLoop)
+{
+    // 设置唤醒通道
+    wakeChannel_->setReadCallback(std::bind(&EventLoop::handleWakeup, this));
+    wakeChannel_->enableReading();
+
+    // 设置定时器通道
+    timerChannel_->setReadCallback(std::bind(&EventLoop::handleTimer, this));
+    timerChannel_->enableReading();
 }
 
 EventLoop::~EventLoop()
 {
-	// delete ep_;
+    wakeChannel_->disableAll();
+    wakeChannel_->remove();
+    ::close(wakeupFd_);
+    
+    timerChannel_->disableAll();
+    timerChannel_->remove();
+    ::close(timerFd_);
 }
 
 void EventLoop::run()
 {
-	// run一定发生在主事件循环里，即线程ID一定是IO线程的ID
-	threadid_ = syscall(SYS_gettid);	// 获取事件循环所在线程的ID
-	while(stop_ == false)
-	{
-		std::vector<Channel*> channels = ep_->loop();
-	
-		// 此处加一个判断，channels是否为空
-		// 如果为空，表示超时，回调TcpServer::epolltimeout()
-		if(channels.size()==0)
-		{
-			epolltimeoutcallback_(this);
-		}
-		else
-		{
-			for(auto &ch:channels)
-			{
-				ch->handleevent();	
-			}
-		}
-	}
+    while (!stop_)
+    {
+        std::vector<Channel*> activeChannels;
+        epoll_->poll(-1, &activeChannels); 
+
+        if (activeChannels.empty())
+        {
+            if (epollTimeoutCallback_)
+            {
+                epollTimeoutCallback_(this);
+            }
+        }
+        else
+        {
+            for (Channel* channel : activeChannels)
+            {
+                channel->handleEvent();
+            }
+        }
+
+        // 处理其他线程发来的异步任务
+        doPendingTasks();
+    }
 }
 
 void EventLoop::stop()
 {
-	stop_ = true;
-	wakeup();
+    stop_ = true;
+    // 如果在其他线程调用 stop，需要唤醒循环线程，使其从 epoll_wait 中跳出
+    if (!isInLoopThread())
+    {
+        wakeup();
+    }
 }
 
-void EventLoop::updatechannel(Channel *ch)
+void EventLoop::runInLoop(Functor cb)
 {
-	ep_->updatechannel(ch);
+    if (isInLoopThread())
+    {
+        cb();
+    }
+    else
+    {
+        queueInLoop(std::move(cb));
+    }
 }
 
-void EventLoop::removechannel(Channel* ch)
+void EventLoop::queueInLoop(Functor cb)
 {
-	ep_->removechannel(ch);
-}
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        pendingTasks_.push(std::move(cb));
+    }
 
-void EventLoop::setepolltimeoutcallback(std::function<void(EventLoop*)>fn)
-{
-	epolltimeoutcallback_ = fn;
+    // 唤醒当前 Loop 线程
+    wakeup();
 }
-
-bool EventLoop::isinloopthread()
-{
-	return threadid_ == syscall(SYS_gettid);
-}
-
-void EventLoop::queueinloop(std::function<void()>fn)
-{
-	{
-		std::lock_guard<std::mutex>gd(mutex_);
-		taskqueue_.push(fn);
-	}
-	// 唤醒事件循环
-	wakeup();
-}
-
 
 void EventLoop::wakeup()
 {
-	uint64_t val = 1;
-	ssize_t n = write(wakeupfd_,&val,sizeof(val));
+    uint64_t one = 1;
+    ssize_t n = ::write(wakeupFd_, &one, sizeof(one));
+    (void)n; // 消除警告
 }
 
-void EventLoop::handlewakeup()
+void EventLoop::handleWakeup()
 {
-	// printf("handlewakeup() thread id is %ld.\n",syscall(SYS_gettid));
-
-	uint64_t val;
-	ssize_t n = read(wakeupfd_,&val,sizeof(val));	// 从eventfd里读出来，如果不读，eventfd的读事件会一直触发（水平触发）
-	
-	std::function<void()>fn;
-	std::lock_guard<std::mutex>gd(mutex_);	// 给任务队列加锁
-	while(taskqueue_.size()>0)
-	{
-		fn = std::move(taskqueue_.front());
-		taskqueue_.pop();
-		fn();				// 执行任务
-	}
+    uint64_t one = 1;
+    ssize_t n = ::read(wakeupFd_, &one, sizeof(one));
+    (void)n;
+    // 唤醒后，run 函数下方的 doPendingTasks 会被执行
 }
 
-void EventLoop::handletimer()
+void EventLoop::doPendingTasks()
 {
-	// 重新计时
-	struct itimerspec timeout;
-	memset(&timeout,0,sizeof(struct itimerspec));	
-	timeout.it_value.tv_sec = timetvl_;		// 定时时间，设置为sec
-	timeout.it_value.tv_nsec = 0;		// 纳秒位数
-	timerfd_settime(timerfd_,0,&timeout,0);	// 设置到句柄上，启动定时器
+    std::queue<Functor> tasks;
+    {
+        // 关键：为了减小锁范围，我们将队列交换到局部变量中处理
+        std::lock_guard<std::mutex> lock(mutex_);
+        tasks.swap(pendingTasks_);
+    }
 
-	if(mainloop_)
-	{
-		// printf("主事件循环的闹钟时间到了");
-	}
-	else
-	{
-		// printf("从事件循环的闹钟时间到了");
-		// printf("EventLoop::handletimer() thread is %ld.fd",syscall(SYS_gettid));
-		time_t now = time(0);
-		std::vector<int> to_delete; // 记录要踢掉的连接fd
-		for (auto& aa : conns_) {
-			if (aa.second->timeout(now,timeout_)) {
-				to_delete.push_back(aa.first);
-			}
-		}
-		// 统一删除
-		for (int fd : to_delete) {
-			// std::cout<<" "<<fd;
-			{
-				std::lock_guard<std::mutex>gd(mmutex_);
-				conns_.erase(fd);
-			}
-			timercallback_(fd);
-		}
-		// std::cout<<std::endl;
-	} 
+    while (!tasks.empty())
+    {
+        tasks.front()();
+        tasks.pop();
+    }
 }
 
-void EventLoop::newconnection(spConnection conn)
+void EventLoop::handleTimer()
 {
-	std::lock_guard<std::mutex>gd(mmutex_);
-	conns_[conn->fd()] = conn;
+    // 重新设置闹钟
+    struct itimerspec timeout;
+    ::memset(&timeout, 0, sizeof(timeout));
+    timeout.it_value.tv_sec = timerInterval_;
+    ::timerfd_settime(timerFd_, 0, &timeout, nullptr);
+
+    if (!isMainLoop_)
+    {
+        time_t now = ::time(nullptr);
+        std::vector<int> toDelete;
+
+        // 检查超时连接
+        {
+            std::lock_guard<std::mutex> lock(connsMutex_);
+            for (auto it = conns_.begin(); it != conns_.end(); )
+            {
+                if (it->second->isTimeout(now, timeout_))
+                {
+                    toDelete.push_back(it->first);
+                    it = conns_.erase(it);
+                }
+                else
+                {
+                    ++it;
+                }
+            }
+        }
+
+        // 统一处理超时回调
+        for (int fd : toDelete)
+        {
+            if (timerCallback_)
+            {
+                timerCallback_(fd);
+            }
+        }
+    }
 }
 
-void EventLoop::settimercallback(std::function<void(int)>fn)
+void EventLoop::newConnection(ConnectionPtr conn)
 {
-	timercallback_ = fn;
+    std::lock_guard<std::mutex> lock(connsMutex_);
+    conns_[conn->fd()] = conn;
 }
 
+bool EventLoop::isInLoopThread() const
+{
+    return threadId_ == getTid();
+}
+
+void EventLoop::updateChannel(Channel* ch)
+{
+    epoll_->updateChannel(ch);
+}
+
+void EventLoop::removeChannel(Channel* ch)
+{
+    epoll_->removeChannel(ch);
+}
+
+} // namespace mymuduo

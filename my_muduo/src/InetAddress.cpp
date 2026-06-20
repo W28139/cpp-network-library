@@ -1,34 +1,66 @@
-#include"my_muduo/InetAddress.h"
+#include "my_muduo/InetAddress.h"
 
-InetAddress::InetAddress(){}
+#include <strings.h>
+#include <cstring>
 
-InetAddress::InetAddress(const std::string &ip,const uint16_t port)
+namespace mymuduo
 {
-	addr_.sin_family = AF_INET;
-	inet_pton(AF_INET,ip.c_str(),&addr_.sin_addr);
-	addr_.sin_port = htons(port);
+
+InetAddress::InetAddress(uint16_t port, std::string ip)
+{
+    // 结构体清零
+    ::bzero(&addr_, sizeof(addr_));
+    
+    addr_.sin_family = AF_INET;
+    // 转换 IP 格式 (线程安全)
+    ::inet_pton(AF_INET, ip.c_str(), &addr_.sin_addr);
+    // 转换端口（大端字节序）
+    addr_.sin_port = htons(port);
 }
 
-InetAddress::InetAddress(const sockaddr_in addr):addr_(addr){}
-
-InetAddress::~InetAddress(){}
-
-const char* InetAddress::ip() const
+InetAddress::InetAddress(const sockaddr_in &addr)
+    : addr_(addr)
 {
-	return inet_ntoa(addr_.sin_addr);
 }
 
-uint16_t InetAddress::port() const
+InetAddress::~InetAddress()
 {
-	return ntohs(addr_.sin_port);
 }
 
-const struct sockaddr* InetAddress::addr() const
+std::string InetAddress::toIp() const
 {
-	return (struct sockaddr*)&addr_;
+    char buf[64] = {0};
+    // 使用 inet_ntop 代替 inet_ntoa 以保证线程安全
+    ::inet_ntop(AF_INET, &addr_.sin_addr, buf, sizeof(buf));
+    return buf;
 }
 
-void InetAddress::setaddr(sockaddr_in clientaddr)
+std::string InetAddress::toIpPort() const
 {
-	addr_ = clientaddr;
+    // 拼接格式 "127.0.0.1:8080"
+    char buf[64] = {0};
+    ::inet_ntop(AF_INET, &addr_.sin_addr, buf, sizeof(buf));
+    
+    size_t end = ::strlen(buf);
+    uint16_t port = ntohs(addr_.sin_port);
+    ::sprintf(buf + end, ":%u", port);
+    
+    return buf;
 }
+
+uint16_t InetAddress::toPort() const
+{
+    return ntohs(addr_.sin_port);
+}
+
+const struct sockaddr* InetAddress::getSockAddr() const
+{
+    return reinterpret_cast<const struct sockaddr*>(&addr_);
+}
+
+void InetAddress::setSockAddr(const sockaddr_in &addr)
+{
+    addr_ = addr;
+}
+
+} // namespace mymuduo

@@ -1,54 +1,82 @@
 #pragma once
-#include<sys/epoll.h>
-#include"Epoll.h"
-#include"Socket.h"
-#include"InetAddress.h"
-#include"EventLoop.h"
-#include<functional>
-#include<memory>
+
+#include <functional>
+#include <memory>
+
+namespace mymuduo
+{
+
+// 前向声明，减少头文件包含
 class EventLoop;
 
-// Channel 的核心意义是：它把文件描述符（fd）和它关心的事件（events）以及处理函数（callbacks）绑定在了一起
+/**
+ * @brief Channel 类封装了 fd 以及它感兴趣的事件（EPOLLIN, EPOLLOUT...）
+ * 同时也绑定了事件发生时的回调函数。
+ */
 class Channel
 {
-private:
-	int fd_ = -1;
-	EventLoop* loop_;
-	bool inepoll_ = false;
-	uint32_t events_ = 0;	// 关心的事件
-	uint32_t revents_ = 0;	// 实际发生的事件
-
-	std::function<void()>readcallback_;
-	std::function<void()>closecallback_;	// 关闭fd_的回调函数，将回调Connection::closecallback()
-	std::function<void()>errorcallback_;	// fd_发生了错误的回调函数，回调Connection::errorcallback()
-	std::function<void()>writecallback_;
-
 public:
-	Channel(EventLoop* loop,int fd);
-	~Channel();
+    using EventCallback = std::function<void()>;
 
-	int fd();
-	void useet();
-	
-	void enablereading();
-	void disablereading();
-	void enablewriting();
-	void disablewriting();
-	
-	void disableall();	// 取消写事件
-	void remove();		// 取消全部事件
+    Channel(EventLoop* loop, int fd);
+    ~Channel();
 
-	void setinepoll();
-	void setrevents(uint32_t ev);
-	bool inepoll();
-	uint32_t events();
-	uint32_t revents();
-	// handleevent() 根据 revents_ 是什么，去调用对应的 readcallback_ 或 writecallback_。
-	void handleevent();
+    // 核心接口：当 fd 发生事件时，被 EventLoop 调用
+    void handleEvent();
 
-	void setreadcallback(std::function<void()>fn);
-	void setclosecallback(std::function<void()>fn);
-	void seterrorcallback(std::function<void()>fn);
-	void setwritecallback(std::function<void()>fn);
+    // 设置回调函数
+    void setReadCallback(EventCallback cb) { readCallback_ = std::move(cb); }
+    void setWriteCallback(EventCallback cb) { writeCallback_ = std::move(cb); }
+    void setCloseCallback(EventCallback cb) { closeCallback_ = std::move(cb); }
+    void setErrorCallback(EventCallback cb) { errorCallback_ = std::move(cb); }
+
+    // 获取底层文件描述符
+    int fd() const { return fd_; }
+
+    // 获取/设置感兴趣的事件
+    uint32_t events() const { return events_; }
+    void setRevents(uint32_t ev) { revents_ = ev; }
+
+    // 判断当前 Channel 是否已经在 Epoll 中
+    bool isNoneEvent() const { return events_ == kNoneEvent; }
+    bool inEpoll() const { return inEpoll_; }
+    void setInEpoll(bool in = true) { inEpoll_ = in; }
+
+    // 开启/关闭读写事件
+    void enableReading();
+    void disableReading();
+    void enableWriting();
+    void disableWriting();
+    void disableAll();
+    void remove();
+
+    bool isWriting() const { return events_ & kWriteEvent; }
+    bool isReading() const { return events_ & kReadEvent; }
+
+    // 是否使用了边缘触发 (ET)
+    void useET();
+
+private:
+    // 更新到 Poller (Epoll)
+    void update();
+
+private:
+    // 事件常量
+    static const uint32_t kNoneEvent;
+    static const uint32_t kReadEvent;
+    static const uint32_t kWriteEvent;
+
+    EventLoop* loop_; // 当前 Channel 所属的 EventLoop
+    const int fd_;    // 底层 fd
+    uint32_t events_;  // 注册的感兴趣事件
+    uint32_t revents_; // 当前活跃的事件（由 Epoll 返回）
+    bool inEpoll_;    // 是否在 Epoll 监听队列中
+
+    // 事件回调
+    EventCallback readCallback_;
+    EventCallback writeCallback_;
+    EventCallback closeCallback_;
+    EventCallback errorCallback_;
 };
 
+} // namespace mymuduo

@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.10)
 project(my_muduo VERSION 1.0.0 LANGUAGES CXX)
 
+set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # 1. 构建模式优化

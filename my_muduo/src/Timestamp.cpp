@@ -1,42 +1,50 @@
 #include "my_muduo/Timestamp.h"
+
 #include <ctime>
+#include <cstdio>
 
-// 默认构造函数，用当前时间初始化对象
-Timestamp::Timestamp() {
-    secsinceepoch_ = time(nullptr);
-}
+namespace mymuduo
+{
 
-// 用一个整数时间初始化对象
-Timestamp::Timestamp(int64_t secsinceepoch) 
-    : secsinceepoch_(secsinceepoch) 
+Timestamp::Timestamp() 
+    : microSecondsSinceEpoch_(0)
 {
 }
 
-// 静态方法：返回当前时间的 Timestamp 对象
-Timestamp Timestamp::now() {
-    return Timestamp(); // 调用默认构造函数获取当前时间
+Timestamp::Timestamp(int64_t microSecondsSinceEpoch)
+    : microSecondsSinceEpoch_(microSecondsSinceEpoch)
+{
 }
 
-// 返回整数表示的时间
-time_t Timestamp::toint() const {
-    return secsinceepoch_;
+Timestamp Timestamp::now()
+{
+    // 使用 time(nullptr) 获取当前秒数，转换为微秒
+    return Timestamp(time(nullptr) * kMicroSecondsPerSecond);
 }
 
-// 返回字符串表示的时间 格式：yyyy-mm-dd hh24:mi:ss
-std::string Timestamp::tostring() const {
+time_t Timestamp::toSeconds() const
+{
+    return static_cast<time_t>(microSecondsSinceEpoch_ / kMicroSecondsPerSecond);
+}
+
+std::string Timestamp::toString() const
+{
     char buf[64] = {0};
+    time_t seconds = toSeconds();
     struct tm tm_time;
     
-    // 使用线程安全的 localtime_r 将 time_t 转换为明文时间结构体 tm
-    // localtime_r 是 Linux 下推荐的写法，防止多线程竞争静态缓冲区
-    localtime_r(&secsinceepoch_, &tm_time);
+    // 线程安全转换
+    ::localtime_r(&seconds, &tm_time);
 
-    snprintf(buf, sizeof(buf), "%4d-%02d-%02d %02d:%02d:%02d",
+    ::snprintf(buf, sizeof(buf), "%4d-%02d-%02d %02d:%02d:%02d",
              tm_time.tm_year + 1900, 
              tm_time.tm_mon + 1,    
              tm_time.tm_mday,
              tm_time.tm_hour,
              tm_time.tm_min,
              tm_time.tm_sec);
+
     return buf;
 }
+
+} // namespace mymuduo

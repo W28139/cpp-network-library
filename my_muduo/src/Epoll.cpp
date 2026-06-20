@@ -1,109 +1,112 @@
-#include"my_muduo/Epoll.h"
+#include "my_muduo/Epoll.h"
+#include "my_muduo/Channel.h"
+
+#include <unistd.h>
+#include <cstring>
+#include <cstdio>
+#include <errno.h>
+
+namespace mymuduo
+{
 
 Epoll::Epoll()
 {
-	epollfd_ = epoll_create(1);
-	if(epollfd_<0)
-	{
-		printf("epoll_create() failed(%d).\n",errno);
-		exit(-1);
-	}
+    // 使用 EPOLL_CLOEXEC 防止子进程继承该 fd
+    epollfd_ = ::epoll_create1(EPOLL_CLOEXEC);
+    if (epollfd_ < 0)
+    {
+        ::fprintf(stderr, "epoll_create error: %d\n", errno);
+    }
 }
 
 Epoll::~Epoll()
 {
-	close(epollfd_);
+    ::close(epollfd_);
 }
 
-std::vector<Channel*> Epoll::loop(int timeout)
+void Epoll::poll(int timeoutMs, ChannelList* activeChannels)
 {
-	// 改为Channel*类型
-	std::vector<Channel*>channels;
-	bzero(events_,sizeof(events_));
+    // 调用 epoll_wait
+    int numEvents = ::epoll_wait(epollfd_, events_, kMaxEvents, timeoutMs);
+    int savedErrno = errno;
 
-	int infds = epoll_wait(epollfd_,events_,MaxEvents,timeout);
-	if(infds<0)
-	{
-		perror("epoll_wait()");
-		exit(-1);
-	}
-	if(infds==0)
-	{
-		return channels;
-	}
-	for(int i=0;i<infds;i++)
-	{
-		// 这里先取出有事件发生的ch(相当于fd,因为一一对应)
-		Channel* ch = (Channel *)events_[i].data.ptr;
-		// 在对应的ch里记录下所发生的事件，这也就是revents_的作用了
-		ch->setrevents(events_[i].events);
-		// 把所有有事件发生的events_(channel)打包返回
-		channels.push_back(ch);
-	}
-	return channels;
+    if (numEvents > 0)
+    {
+        for (int i = 0; i < numEvents; ++i)
+        {
+            // 通过 data.ptr 拿回 Channel 对象
+            Channel* channel = static_cast<Channel*>(events_[i].data.ptr);
+            channel->setRevents(events_[i].events);
+            // 填充给 EventLoop 供后续 handleEvent 处理
+            activeChannels->push_back(channel);
+        }
+    }
+    else if (numEvents == 0)
+    {
+        // timeout, do nothing
+    }
+    else
+    {
+        if (savedErrno != EINTR)
+        {
+            ::fprintf(stderr, "epoll_wait error: %d\n", savedErrno);
+        }
+    }
 }
 
-/*
- 	updatechannel 的作用：把 Channel 挂到红黑树上，或者修改它在红黑树上的监听事件
-*/
-void Epoll::updatechannel(Channel *ch)
+void Epoll::updateChannel(Channel* ch)
 {
     struct epoll_event ev;
-    // 【核心点】把 Channel 对象的指针存入 data.ptr
-    // 这样当 epoll_wait 返回时，我们能直接拿到 Channel 对象，而不是干巴巴的 fd 整数
-    ev.data.ptr = ch; 
-    
-    // 从 Channel 对象中获取它关心的事件（如 EPOLLIN | EPOLLET 等）
+    ::memset(&ev, 0, sizeof(ev));
     ev.events = ch->events();
-    
-    // 判断这个 Channel 是否已经在 epoll 的红黑树里了
-    if(ch->inepoll())
+    ev.data.ptr = ch;
+
+    int fd = ch->fd();
+
+    if (!ch->inEpoll())
     {
-        // 情况 A：已经在树上了，说明这次是来修改监听事件的（MOD）
-        // 比如：之前只读，现在要发数据了，需要增加对可写事件的监听
-        int ret = epoll_ctl(epollfd_, EPOLL_CTL_MOD, ch->fd(), &ev);
-        if(ret == -1)
+        // 如果不在 epoll 树上，执行 ADD
+        if (::epoll_ctl(epollfd_, EPOLL_CTL_ADD, fd, &ev) < 0)
         {
-            perror("epoll_ctl MOD failed");
-            exit(-1);
+            ::perror("epoll_ctl add error");
+        }
+        else
+        {
+            ch->setInEpoll(true);
         }
     }
     else
     {
-        // 情况 B：不在树上，说明是一个新连接，需要把它加到红黑树里（ADD）
-        int ret = epoll_ctl(epollfd_, EPOLL_CTL_ADD, ch->fd(), &ev);
-        if(ret == -1)
+        // 如果已经在树上，执行 MOD (或者删除，取决于 events)
+        if (ch->isNoneEvent())
         {
-            perror("epoll_ctl ADD failed");
-            exit(-1);
+            if (::epoll_ctl(epollfd_, EPOLL_CTL_DEL, fd, 0) < 0)
+            {
+                ::perror("epoll_ctl del error");
+            }
+            ch->setInEpoll(false);
         }
-        // 更新 Channel 内部的状态位，标记它现在已经“在树上”了
-        ch->setinepoll(); 
+        else
+        {
+            if (::epoll_ctl(epollfd_, EPOLL_CTL_MOD, fd, &ev) < 0)
+            {
+                ::perror("epoll_ctl mod error");
+            }
+        }
     }
 }
 
-/*
-  removechannel 的作用：把 Channel 从红黑树上摘除
- */
-void Epoll::removechannel(Channel* ch)
+void Epoll::removeChannel(Channel* ch)
 {
-    // 只有在树上的 Channel 才能被删除
-    if(ch->inepoll())
+    int fd = ch->fd();
+    if (ch->inEpoll())
     {
-        printf("removechannel(). fd=%d\n", ch->fd());
-        
-        // 调用 epoll_ctl 进行删除（DEL）
-        // 对于 DEL 操作，最后一个参数 ev 在 2.6.9 版本之后的内核中可以传 0/NULL
-        int ret = epoll_ctl(epollfd_, EPOLL_CTL_DEL, ch->fd(), 0);
-        if(ret == -1)
+        if (::epoll_ctl(epollfd_, EPOLL_CTL_DEL, fd, 0) < 0)
         {
-            perror("epoll_ctl DEL failed.\n");
-            exit(-1);
+            ::perror("epoll_ctl del error");
         }
-        
-        /* 
-           注意：这里通常还需要调用 ch->setinepoll(false) 
-           或者在 Channel 销毁前确保状态同步。
-        */
+        ch->setInEpoll(false);
     }
 }
+
+} // namespace mymuduo

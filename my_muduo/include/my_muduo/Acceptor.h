@@ -1,27 +1,44 @@
 #pragma once
-#include<functional>
-#include"Socket.h"
-#include"InetAddress.h"
-#include"Channel.h"
-#include"EventLoop.h"
-#include<memory>
+
+#include "my_muduo/Socket.h"
+#include "my_muduo/Channel.h"
+
+#include <functional>
+#include <memory>
+
+namespace mymuduo
+{
+
+class EventLoop;
+class InetAddress;
+
+/**
+ * @brief 接收器：专门负责监听新连接并进行 accept
+ */
 class Acceptor
 {
-private:
-	EventLoop* loop_;	
-	Socket serversock_;
-	Channel acceptchannel_;
-	
-	// 处理新客户端连接请求的回调函数，将指向TcpServer::newconnection()
-	std::function<void(std::unique_ptr<Socket>)>newconnectioncb_;
-	
 public:
-	Acceptor(EventLoop* loop,const std::string &ip,const uint16_t port);
-	~Acceptor();
+    using NewConnectionCallback = std::function<void(std::unique_ptr<Socket>)>;
 
-	void newconnection();
-	// 设置处理新客户端连接请求的回调函数
-	void setnewconnectioncb(std::function<void(std::unique_ptr<Socket>)> fn);
+    Acceptor(EventLoop* loop, const std::string& ip, uint16_t port);
+    ~Acceptor();
+
+    // 设置新连接到来时的处理函数
+    void setNewConnectionCallback(NewConnectionCallback cb)
+    {
+        newConnectionCallback_ = std::move(cb);
+    }
+
+private:
+    // 当监听 fd 可读时调用的函数
+    void handleRead();
+
+private:
+    EventLoop* loop_;
+    Socket serverSock_;     // 监听套接字
+    Channel acceptChannel_; // 监听套接字对应的通道
+
+    NewConnectionCallback newConnectionCallback_;
 };
 
-
+} // namespace mymuduo

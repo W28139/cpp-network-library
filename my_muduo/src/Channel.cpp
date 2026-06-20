@@ -1,128 +1,100 @@
-#include"my_muduo/Channel.h"
+#include "my_muduo/Channel.h"
+#include "my_muduo/EventLoop.h"
 
-Channel::Channel(EventLoop* loop,int fd):fd_(fd),loop_(loop){}
+#include <sys/epoll.h>
 
-Channel::~Channel(){}
-
-int Channel::fd()
+namespace mymuduo
 {
-	return fd_;
+
+const uint32_t Channel::kNoneEvent = 0;
+const uint32_t Channel::kReadEvent = EPOLLIN | EPOLLPRI;
+const uint32_t Channel::kWriteEvent = EPOLLOUT;
+
+Channel::Channel(EventLoop* loop, int fd)
+    : loop_(loop)
+    , fd_(fd)
+    , events_(0)
+    , revents_(0)
+    , inEpoll_(false)
+{
 }
 
-void Channel::useet()
+Channel::~Channel()
 {
-	events_ = events_|EPOLLET;
 }
 
-void Channel::enablereading()
+void Channel::useET()
 {
-	events_ |= EPOLLIN;	// 注册读事件
-	loop_->updatechannel(this);
+    events_ |= EPOLLET;
+    update();
 }
 
-void Channel::disablereading()
+void Channel::enableReading()
 {
-	events_ &= ~EPOLLIN;	// 取消读时间
-	loop_->updatechannel(this);
-
+    events_ |= kReadEvent;
+    update();
 }
 
-
-void Channel::disableall()
+void Channel::disableReading()
 {
-	events_ = 0;
-	loop_->updatechannel(this);
+    events_ &= ~kReadEvent;
+    update();
+}
+
+void Channel::enableWriting()
+{
+    events_ |= kWriteEvent;
+    update();
+}
+
+void Channel::disableWriting()
+{
+    events_ &= ~kWriteEvent;
+    update();
+}
+
+void Channel::disableAll()
+{
+    events_ = kNoneEvent;
+    update();
 }
 
 void Channel::remove()
 {
-	disableall();
-	loop_->removechannel(this);
-
-}	
-void Channel::enablewriting()
-{
-	events_ |= EPOLLOUT;	// 注册写事件
-	loop_->updatechannel(this);
+    loop_->removeChannel(this);
 }
 
-void Channel::disablewriting()
+void Channel::update()
 {
-	events_ &= ~EPOLLOUT;	// 取消写事件
-	loop_->updatechannel(this);
+    // 通过所属的 EventLoop 通知 Epoll 更新该 Channel 的监听状态
+    loop_->updateChannel(this);
 }
 
-void Channel::setinepoll()
+void Channel::handleEvent()
 {
-	inepoll_ =true;
+    // 如果发生了挂断且没有读事件，则调用关闭回调
+    if ((revents_ & EPOLLHUP) && !(revents_ & EPOLLIN))
+    {
+        if (closeCallback_) closeCallback_();
+    }
+
+    // 错误处理
+    if (revents_ & EPOLLERR)
+    {
+        if (errorCallback_) errorCallback_();
+    }
+
+    // 可读、优先级数据、挂断
+    if (revents_ & (EPOLLIN | EPOLLPRI | EPOLLRDHUP))
+    {
+        if (readCallback_) readCallback_();
+    }
+
+    // 可写
+    if (revents_ & EPOLLOUT)
+    {
+        if (writeCallback_) writeCallback_();
+    }
 }
 
-void Channel::setrevents(uint32_t ev)
-{
-	revents_ = ev;
-}
-
-bool Channel::inepoll()
-{
-	return inepoll_;
-}
-
-uint32_t Channel::events()
-{
-	return events_;
-}
-
-uint32_t Channel::revents()
-{
-	return revents_;
-}
-
-void Channel::handleevent()
-{
-	if(revents_ & EPOLLRDHUP)
-	{
-		// printf("EPOLLRDHUP\n");
-		closecallback_();
-	}
-	else if(revents_ & (EPOLLIN|EPOLLPRI))
-	{
-		// printf("EPOLLIN|EPOLLPRI\n");
-		readcallback_();
-
-	}
-	else if(revents_ & EPOLLOUT)
-	{
-		// printf("EPOLLOUT\n");
-		writecallback_();
-
-	}
-	else
-	{
-		// printf("ERROR\n");
-		errorcallback_();
-	}	
-}
-
-
-
-void Channel::setreadcallback(std::function<void()>fn)
-{
-	readcallback_ = fn;
-}
-
-
-void Channel::setclosecallback(std::function<void()>fn)
-{
-	closecallback_ = fn;
-}
-
-
-void Channel::seterrorcallback(std::function<void()>fn)
-{
-	errorcallback_ = fn;
-}
-
-void Channel::setwritecallback(std::function<void()>fn)
-{
-	writecallback_ = fn;
-}
+} // namespace mymuduo

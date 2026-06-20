@@ -1,17 +1,44 @@
 #pragma once
-#include<iostream>
-#include<string>
 
+#include <iostream>
+#include <string>
+#include <cstdint>
+
+namespace mymuduo
+{
+
+/**
+ * @brief 时间戳类，提供精确到微秒的时间表示
+ */
 class Timestamp
 {
-private:
-	time_t secsinceepoch_;			// 整数表示时间
-
 public:
-	Timestamp();				// 用当前时间初始化对象
-	Timestamp(int64_t secsinceepoch);	// 用一个整数时间初始化对象
+    // 默认构造函数
+    Timestamp();
 
-	static Timestamp now();			// 返回当前时间的Timestamp对象
-	time_t toint() const;			// 返回整数表示时间
-	std::string tostring() const;		// 返回字符串表示的时间 格式：yyyy-mm-dd hh24:mi:ss
+    // 显式构造函数，避免隐式转换
+    explicit Timestamp(int64_t microSecondsSinceEpoch);
+
+    // 获取当前时间戳
+    static Timestamp now();
+
+    // 转换为整数（秒）
+    time_t toSeconds() const;
+
+    // 转换为字符串格式 yyyy-mm-dd hh:mm:ss
+    std::string toString() const;
+
+    // 获取内部微秒数值
+    int64_t microSecondsSinceEpoch() const 
+    { 
+        return microSecondsSinceEpoch_; 
+    }
+
+    // 一秒等于多少微秒
+    static const int kMicroSecondsPerSecond = 1000 * 1000;
+
+private:
+    int64_t microSecondsSinceEpoch_;
 };
+
+} // namespace mymuduo

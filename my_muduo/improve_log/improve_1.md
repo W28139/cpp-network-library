@@ -10,20 +10,20 @@
 Running 30s test @ http://127.0.0.1:8080/
   12 threads and 400 connections
   Thread Stats   Avg      Stdev     Max   +/- Stdev
-    Latency   693.20us  233.79us   6.43ms   90.43%
-    Req/Sec    48.01k     5.20k  181.61k    94.34%
+    Latency   232.56us    0.92ms 209.68ms   98.09%
+    Req/Sec   128.04k    10.46k  158.13k    68.57%
   Latency Distribution
-     50%  630.00us
-     75%  711.00us
-     90%    0.89ms
-     99%    1.76ms
-  17213613 requests in 30.10s, 1.62GB read
-Requests/sec: 571888.81
-Transfer/sec:     55.08MB
+     50%  151.00us
+     75%  228.00us
+     90%  380.00us
+     99%    1.63ms
+  45896907 requests in 30.10s, 4.32GB read
+Requests/sec: 1524684.77
+Transfer/sec:    146.86MB
 ```
 **关键指标分析：**
-*   **高吞吐量**：每秒处理请求数达到 57.1 万。
-*   **低延迟**：平均延迟控制在 693 微秒，P99 延迟仅为 1.76 毫秒，表现出极佳的实时性与稳定性。
+*   **高吞吐量**：每秒处理请求数达到 152.1 万。
+*   **低延迟**：平均延迟控制在 693 微秒，P99 延迟仅为 1.63 毫秒，表现出极佳的实时性与稳定性。
 
 ---
 

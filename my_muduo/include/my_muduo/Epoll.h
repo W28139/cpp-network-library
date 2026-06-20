@@ -1,27 +1,38 @@
 #pragma once
-#include<stdio.h>
-#include<stdlib.h>
-#include<errno.h>
-#include<string.h>
-#include<sys/epoll.h>
-#include<vector>
-#include<unistd.h>
 
-#include"Channel.h"
+#include <sys/epoll.h>
+#include <vector>
+
+namespace mymuduo
+{
 
 class Channel;
 
+/**
+ * @brief 封装 epoll 系统调用，管理所有 Channel
+ */
 class Epoll
 {
-private:
-	static const int MaxEvents = 100;
-	int epollfd_ = -1;
-	epoll_event events_[MaxEvents];
 public:
-	Epoll();
-	~Epoll();
+    using ChannelList = std::vector<Channel*>;
 
-	void updatechannel(Channel *ch);
-	void removechannel(Channel *ch);
-	std::vector<Channel*>loop(int timeout=-1);
+    Epoll();
+    ~Epoll();
+
+    // 等待事件发生，返回活跃的 Channel 列表
+    void poll(int timeoutMs, ChannelList* activeChannels);
+
+    // 修改/添加监听的 Channel
+    void updateChannel(Channel* ch);
+
+    // 从监视队列中删除 Channel
+    void removeChannel(Channel* ch);
+
+private:
+    static const int kMaxEvents = 100;
+
+    int epollfd_;
+    struct epoll_event events_[kMaxEvents];
 };
+
+} // namespace mymuduo
